@@ -7,6 +7,11 @@ class MLPredictionService {
   // Get ML prediction for next hour
   static async predictNextHour(userId) {
     try {
+      // Validate userId
+      if (!userId || userId === 'null' || userId === 'undefined') {
+        return { error: 'Invalid userId provided' };
+      }
+      
       // Get last 24 hours of data
       const startTime = new Date(Date.now() - 24 * 60 * 60 * 1000);
       const result = await db.query(
@@ -48,6 +53,11 @@ class MLPredictionService {
   // Get ML prediction for next day
   static async predictNextDay(userId) {
     try {
+      // Validate userId
+      if (!userId || userId === 'null' || userId === 'undefined') {
+        return { error: 'Invalid userId provided' };
+      }
+      
       // Get last 7 days of data
       const startTime = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
       const result = await db.query(
@@ -87,6 +97,11 @@ class MLPredictionService {
   // Detect anomalies in power consumption
   static async detectAnomalies(userId) {
     try {
+      // Validate userId
+      if (!userId || userId === 'null' || userId === 'undefined') {
+        return { anomalies: [] };
+      }
+      
       // Get last week data
       const startTime = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
       const result = await db.query(

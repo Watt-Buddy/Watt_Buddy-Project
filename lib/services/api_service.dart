@@ -156,4 +156,245 @@ class ApiService {
     }
   }
 
+  // ============ RELAY CONTROL ============
+  static Future<bool> controlRelay1(bool turnOn) async {
+    try {
+      final endpoint = turnOn ? '/relay1/on' : '/relay1/off';
+      debugPrint('📤 Sending relay 1 command: ${turnOn ? 'ON' : 'OFF'}');
+      final response = await http
+          .post(
+            Uri.parse('$baseUrl$endpoint'),
+            headers: {'Content-Type': 'application/json'},
+          )
+          .timeout(connectionTimeout);
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        debugPrint('✅ Relay 1 ${turnOn ? 'ON' : 'OFF'} successful');
+        return data['success'] ?? false;
+      }
+      return false;
+    } catch (e) {
+      debugPrint('❌ Relay 1 control error: $e');
+      return false;
+    }
+  }
+
+  static Future<bool> controlRelay2(bool turnOn) async {
+    try {
+      final endpoint = turnOn ? '/relay2/on' : '/relay2/off';
+      debugPrint('📤 Sending relay 2 command: ${turnOn ? 'ON' : 'OFF'}');
+      final response = await http
+          .post(
+            Uri.parse('$baseUrl$endpoint'),
+            headers: {'Content-Type': 'application/json'},
+          )
+          .timeout(connectionTimeout);
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        debugPrint('✅ Relay 2 ${turnOn ? 'ON' : 'OFF'} successful');
+        return data['success'] ?? false;
+      }
+      return false;
+    } catch (e) {
+      debugPrint('❌ Relay 2 control error: $e');
+      return false;
+    }
+  }
+
+  static Future<Map<String, dynamic>> getRelayStatus() async {
+    try {
+      debugPrint('📤 Getting relay status');
+      final response = await http
+          .get(
+            Uri.parse('$baseUrl/relay/all'),
+            headers: {'Content-Type': 'application/json'},
+          )
+          .timeout(connectionTimeout);
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        debugPrint('✅ Got relay status: $data');
+        return data;
+      }
+      return {};
+    } catch (e) {
+      debugPrint('❌ Get relay status error: $e');
+      return {};
+    }
+  }
+
+  // ============ ESP32 SENSOR ENDPOINTS ============
+  
+  /// Get current sensor readings from ESP32
+  /// Reads: Voltage, Current, Power, Daily/Monthly Energy
+  static Future<Map<String, dynamic>> getESP32Sensors() async {
+    try {
+      debugPrint('📊 Fetching ESP32 sensor readings...');
+      
+      // Direct connection to ESP32 (local network)
+      const String esp32Url = 'http://10.168.130.214:80/sensors';
+      
+      final response = await http
+          .get(
+            Uri.parse(esp32Url),
+            headers: {'Content-Type': 'application/json'},
+          )
+          .timeout(const Duration(seconds: 10));
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        debugPrint('✅ ESP32 Sensors: $data');
+        return {
+          'success': true,
+          'voltage': data['voltage'] ?? 0.0,
+          'current': data['current'] ?? 0.0,
+          'power': data['power'] ?? 0.0,
+          'relay': data['relay'] ?? false,
+          'totalEnergy': data['totalEnergy'] ?? 0.0,
+          'dailyEnergy': data['dailyEnergy'] ?? 0.0,
+          'monthlyEnergy': data['monthlyEnergy'] ?? 0.0,
+          'timestamp': data['timestamp'] ?? 0,
+        };
+      }
+      return {'success': false, 'error': 'ESP32 not responding'};
+    } catch (e) {
+      debugPrint('❌ ESP32 sensor error: $e');
+      return {'success': false, 'error': e.toString()};
+    }
+  }
+
+  /// Control ESP32 relay ON
+  static Future<bool> turnESP32RelayOn() async {
+    try {
+      debugPrint('🔌 Turning ESP32 relay ON...');
+      const String esp32Url = 'http://10.168.130.214:80/relay/on';
+      
+      final response = await http
+          .post(
+            Uri.parse(esp32Url),
+            headers: {'Content-Type': 'application/json'},
+          )
+          .timeout(const Duration(seconds: 10));
+
+      if (response.statusCode == 200) {
+        debugPrint('✅ Relay turned ON');
+        return true;
+      }
+      return false;
+    } catch (e) {
+      debugPrint('❌ Relay ON error: $e');
+      return false;
+    }
+  }
+
+  /// Control ESP32 relay OFF
+  static Future<bool> turnESP32RelayOff() async {
+    try {
+      debugPrint('🔌 Turning ESP32 relay OFF...');
+      const String esp32Url = 'http://10.168.130.214:80/relay/off';
+      
+      final response = await http
+          .post(
+            Uri.parse(esp32Url),
+            headers: {'Content-Type': 'application/json'},
+          )
+          .timeout(const Duration(seconds: 10));
+
+      if (response.statusCode == 200) {
+        debugPrint('✅ Relay turned OFF');
+        return true;
+      }
+      return false;
+    } catch (e) {
+      debugPrint('❌ Relay OFF error: $e');
+      return false;
+    }
+  }
+
+  /// Get ESP32 relay status
+  static Future<Map<String, dynamic>> getESP32RelayStatus() async {
+    try {
+      debugPrint('📊 Fetching ESP32 relay status...');
+      const String esp32Url = 'http://10.168.130.214:80/relay/status';
+      
+      final response = await http
+          .get(
+            Uri.parse(esp32Url),
+            headers: {'Content-Type': 'application/json'},
+          )
+          .timeout(const Duration(seconds: 10));
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        return {
+          'success': true,
+          'relay': data['relay'] ?? false,
+          'voltage': data['voltage'] ?? 0.0,
+          'current': data['current'] ?? 0.0,
+          'power': data['power'] ?? 0.0,
+        };
+      }
+      return {'success': false};
+    } catch (e) {
+      debugPrint('❌ ESP32 relay status error: $e');
+      return {'success': false};
+    }
+  }
+
+  /// Set logged-in user on ESP32
+  static Future<bool> setESP32User(String userId) async {
+    try {
+      debugPrint('👤 Setting ESP32 user: $userId');
+      final String esp32Url = 'http://10.168.130.214:80/user/set?userId=$userId';
+      
+      final response = await http
+          .post(
+            Uri.parse(esp32Url),
+            headers: {'Content-Type': 'application/json'},
+          )
+          .timeout(const Duration(seconds: 10));
+
+      if (response.statusCode == 200) {
+        debugPrint('✅ ESP32 user set to: $userId');
+        return true;
+      }
+      return false;
+    } catch (e) {
+      debugPrint('❌ Set ESP32 user error: $e');
+      return false;
+    }
+  }
+
+  /// Get energy data from ESP32
+  static Future<Map<String, dynamic>> getESP32Energy() async {
+    try {
+      debugPrint('⚡ Fetching ESP32 energy data...');
+      const String esp32Url = 'http://10.168.130.214:80/energy';
+      
+      final response = await http
+          .get(
+            Uri.parse(esp32Url),
+            headers: {'Content-Type': 'application/json'},
+          )
+          .timeout(const Duration(seconds: 10));
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        return {
+          'success': true,
+          'totalEnergy': data['totalEnergy'] ?? 0.0,
+          'dailyEnergy': data['dailyEnergy'] ?? 0.0,
+          'monthlyEnergy': data['monthlyEnergy'] ?? 0.0,
+        };
+      }
+      return {'success': false};
+    } catch (e) {
+      debugPrint('❌ ESP32 energy error: $e');
+      return {'success': false};
+    }
+  }
+
 }
+

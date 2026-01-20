@@ -4,7 +4,7 @@ import 'dart:convert';
 import '../services/ml_prediction_service.dart';
 
 class ElectricityPredictionScreen extends StatefulWidget {
-  const ElectricityPredictionScreen({Key? key}) : super(key: key);
+  const ElectricityPredictionScreen({super.key});
 
   @override
   State<ElectricityPredictionScreen> createState() =>
@@ -580,7 +580,7 @@ class _ElectricityPredictionScreenState
                     ),
                   ),
                 )
-                .toList(),
+                ,
           ],
         ),
       ),

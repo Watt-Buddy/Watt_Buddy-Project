@@ -11,9 +11,10 @@ class NavigationHelper {
     // Use pushReplacement for main pages to avoid back stack issues
     if (routeName == '/dashboard' ||
         routeName == '/profile' ||
-        routeName == '/bills' ||
+        routeName == '/bill-prediction' ||
         routeName == '/rewards' ||
-        routeName == '/devices') {
+        routeName == '/devices' ||
+        routeName == '/recommendations') {
       Navigator.pushReplacementNamed(context, routeName);
     } else {
       Navigator.pushNamed(context, routeName);
@@ -102,9 +103,9 @@ class NavigationHelper {
                   ),
                   _navItem(
                     context: context,
-                    icon: Icons.receipt,
-                    label: "Bill History",
-                    route: '/bills',
+                    icon: Icons.trending_up,
+                    label: "Bill Predictor",
+                    route: '/bill-prediction',
                     currentRoute: currentRoute,
                     isOpen: isOpen,
                   ),
@@ -130,6 +131,14 @@ class NavigationHelper {
                     icon: Icons.devices,
                     label: "Devices",
                     route: '/devices',
+                    currentRoute: currentRoute,
+                    isOpen: isOpen,
+                  ),
+                  _navItem(
+                    context: context,
+                    icon: Icons.shopping_bag,
+                    label: "Recommendations",
+                    route: '/recommendations',
                     currentRoute: currentRoute,
                     isOpen: isOpen,
                   ),

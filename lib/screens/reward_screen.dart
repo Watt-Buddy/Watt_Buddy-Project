@@ -117,9 +117,7 @@ class _RewardsScreenState extends State<RewardsScreen> {
                     crossAxisCount: cols,
                     crossAxisSpacing: 16,
                     mainAxisSpacing: 16,
-                    childAspectRatio: MediaQuery.of(context).size.width < 600
-                        ? 1.25
-                        : 1.3,
+                    childAspectRatio: 1.2,
                   ),
                   itemBuilder: (context, i) => _rewardCard(rewards[i]),
                 );
@@ -203,8 +201,8 @@ class _RewardsScreenState extends State<RewardsScreen> {
                 onPressed: reward['redeemed'] ? null : () {},
                 style: ElevatedButton.styleFrom(
                   backgroundColor: reward['redeemed']
-                      ? Colors.grey
-                      : const Color(0xFF0072FF),
+                      ? const Color.fromARGB(255, 236, 234, 234)
+                      : const Color.fromARGB(255, 236, 238, 241),
                 ),
                 child: Text(reward['redeemed'] ? "Redeemed" : "Redeem"),
               ),

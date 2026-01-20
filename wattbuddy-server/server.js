@@ -24,10 +24,14 @@ const MonthlyUsageService = require('./services/monthlyUsageService');
 const authRoutes = require('./routes/authRoutes');
 const mlRoutes = require('./routes/mlRoutes');
 const usageRoutes = require('./routes/usageRoutes');
+const predictionRoutes = require('./routes/predictionRoutes');
+const notificationRoutes = require('./routes/notificationRoutes');
 
 app.use('/api/auth', authRoutes);
 app.use('/api/ml', mlRoutes);
 app.use('/api/usage', usageRoutes);
+app.use('/api/predictions', predictionRoutes);
+app.use('/api/notifications', notificationRoutes);
 
 // ============ TEST ROUTE ============
 app.get('/', (req, res) => {

@@ -114,6 +114,20 @@ class _LoginRegisterScreenState extends State<LoginRegisterScreen> {
       backgroundColor: const Color(0xFF0A0A2A),
       body: Stack(
         children: [
+          // Background Image
+          Container(
+            decoration: BoxDecoration(
+              image: DecorationImage(
+                image: const AssetImage('assets/images/Gemini_Generated_Image_m8bsn8m8bsn8m8bs.png'),
+                fit: BoxFit.cover,
+                opacity: 0.3,
+              ),
+            ),
+          ),
+          // Dark Overlay
+          Container(
+            color: const Color(0xFF0A0A2A).withValues(alpha: 0.7),
+          ),
           Center(
             child: SingleChildScrollView(
               padding: const EdgeInsets.symmetric(vertical: 24),

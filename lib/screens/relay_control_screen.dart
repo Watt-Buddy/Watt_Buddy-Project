@@ -4,7 +4,7 @@ import 'dart:convert';
 import '../services/api_service.dart';
 
 class RelayControlScreen extends StatefulWidget {
-  const RelayControlScreen({Key? key}) : super(key: key);
+  const RelayControlScreen({super.key});
 
   @override
   State<RelayControlScreen> createState() => _RelayControlScreenState();
@@ -270,9 +270,9 @@ class SensorDataGrid extends StatelessWidget {
   final Map<String, dynamic> sensorData;
 
   const SensorDataGrid({
-    Key? key,
+    super.key,
     required this.sensorData,
-  }) : super(key: key);
+  });
 
   @override
   Widget build(BuildContext context) {
