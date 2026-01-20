@@ -1,4 +1,3 @@
-import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
@@ -6,10 +5,10 @@ import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import '../services/api_service.dart';
 
 class LoginRegisterScreen extends StatefulWidget {
-  const LoginRegisterScreen({Key? key}) : super(key: key);
+  const LoginRegisterScreen({super.key});
 
   @override
-  _LoginRegisterScreenState createState() => _LoginRegisterScreenState();
+  State<LoginRegisterScreen> createState() => _LoginRegisterScreenState();
 }
 
 class _LoginRegisterScreenState extends State<LoginRegisterScreen> {
@@ -122,7 +121,7 @@ class _LoginRegisterScreenState extends State<LoginRegisterScreen> {
                 constraints: const BoxConstraints(maxWidth: 420),
                 padding: const EdgeInsets.all(25),
                 decoration: BoxDecoration(
-                  color: Colors.white.withOpacity(0.10),
+                  color: Colors.white.withValues(alpha: 0.10),
                   borderRadius: BorderRadius.circular(22),
                   border: Border.all(color: Colors.white24),
                 ),

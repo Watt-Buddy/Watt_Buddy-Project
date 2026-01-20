@@ -6,10 +6,10 @@ class ResponsiveScaffold extends StatelessWidget {
   final Widget body;
 
   const ResponsiveScaffold({
-    Key? key,
+    super.key,
     required this.currentRoute,
     required this.body,
-  }) : super(key: key);
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -20,7 +20,7 @@ class ResponsiveScaffold extends StatelessWidget {
       return Scaffold(
         appBar: AppBar(
           title: const Text("Watt Buddy ⚡"),
-          backgroundColor: const Color(0xFF0A0A2A),
+          backgroundColor: const Color.fromARGB(255, 122, 147, 230),
         ),
         drawer: Drawer(
           backgroundColor: const Color(0xFF0A0A2A),

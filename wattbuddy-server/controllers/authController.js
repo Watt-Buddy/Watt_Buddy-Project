@@ -12,32 +12,70 @@ exports.registerUser = async (req, res) => {
 
   const { username, email, consumer_number, password } = req.body;
 
+  // Validate input
+  if (!username || !email || !consumer_number || !password) {
+    console.warn("⚠️ Missing required fields");
+    return res.status(400).json({ message: 'All fields are required' });
+  }
+
   try {
-    // 1. Check if user already exists
-    const userCheck = await pool.query(
-      'SELECT * FROM users WHERE email = $1 OR consumer_number = $2',
-      [email, consumer_number]
-    );
+    console.log("🔍 Checking if user already exists...");
+    
+    // 1. Check if user already exists (with timeout)
+    const userCheck = await Promise.race([
+      pool.query(
+        'SELECT * FROM users WHERE email = $1 OR consumer_number = $2',
+        [email, consumer_number]
+      ),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('Database timeout while checking user')), 10000)
+      )
+    ]);
 
     if (userCheck.rows.length > 0) {
+      console.warn("⚠️ User already exists:", email);
       return res.status(400).json({ message: 'User already exists' });
     }
 
+    console.log("✅ User does not exist, proceeding with registration");
+
     // 2. Hash password
+    console.log("🔒 Hashing password...");
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    // 3. Insert user
-    await pool.query(
-      'INSERT INTO users (username, email, consumer_number, password) VALUES ($1, $2, $3, $4)',
-      [username, email, consumer_number, hashedPassword]
-    );
+    // 3. Insert user (with timeout)
+    console.log("💾 Inserting user into database...");
+    await Promise.race([
+      pool.query(
+        'INSERT INTO users (username, email, consumer_number, password) VALUES ($1, $2, $3, $4)',
+        [username, email, consumer_number, hashedPassword]
+      ),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('Database timeout while inserting user')), 10000)
+      )
+    ]);
 
-    console.log("✅ Registration successful");
+    console.log("✅ Registration successful for user:", email);
     res.status(201).json({ message: 'Registration successful' });
 
   } catch (err) {
-    console.error("❌ Registration error:", err);
-    res.status(500).json({ message: 'Server error' });
+    console.error("❌ Registration error:", err.message);
+    console.error("   Error type:", err.code || err.type || 'Unknown');
+    
+    // Provide specific error messages
+    if (err.message.includes('timeout')) {
+      return res.status(503).json({ 
+        message: 'Database connection timeout. Please check if PostgreSQL is running.' 
+      });
+    }
+    
+    if (err.code === 'ECONNREFUSED') {
+      return res.status(503).json({ 
+        message: 'Cannot reach database. Is PostgreSQL running at ' + (process.env.DATABASE_URL || 'localhost:5432') + '?' 
+      });
+    }
+
+    res.status(500).json({ message: 'Server error: ' + err.message });
   }
 };
 

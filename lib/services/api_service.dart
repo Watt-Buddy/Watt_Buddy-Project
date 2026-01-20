@@ -1,12 +1,71 @@
 import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
 class ApiService {
-  // 🔴 Using PC IP address - works with USB debugging
-  static const String baseUrl = 'http://172.17.1.150:4000/api/auth';
-  // For WiFi on real phone use: http://YOUR_PC_IP:4000/api/auth
+  // Use emulator host so Android emulator can reach the local server
+  static String get baseUrl {
+    if (kIsWeb) {
+      return 'http://localhost:4000/api';
+    }
+
+    if (Platform.isAndroid) {
+      // REAL ANDROID PHONE (CPH2001)
+      return 'http://172.17.4.170:4000/api';
+    }
+
+    // Windows / macOS / Linux
+    return 'http://localhost:4000/api';
+  }
+
+  // For a real phone on the same Wi-Fi use: http://YOUR_PC_IP:4000/api
+
+  // Connection timeout - increase from 10 to 30 seconds to allow for database operations
+  static const Duration connectionTimeout = Duration(seconds: 30);
+
+  // ============ GENERIC HTTP METHODS ============
+  /// Generic POST request
+  static Future<Map<String, dynamic>> post(
+    String endpoint,
+    Map<String, dynamic> body,
+  ) async {
+    try {
+      debugPrint('📤 POST $endpoint: $body');
+      final response = await http
+          .post(
+            Uri.parse('$baseUrl$endpoint'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode(body),
+          )
+          .timeout(connectionTimeout);
+
+      debugPrint('📥 Response: ${response.statusCode}');
+      return jsonDecode(response.body);
+    } catch (e) {
+      debugPrint('❌ POST Error: $e');
+      throw Exception('POST $endpoint failed: $e');
+    }
+  }
+
+  /// Generic GET request
+  static Future<Map<String, dynamic>> get(String endpoint) async {
+    try {
+      debugPrint('📤 GET $endpoint');
+      final response = await http
+          .get(
+            Uri.parse('$baseUrl$endpoint'),
+            headers: {'Content-Type': 'application/json'},
+          )
+          .timeout(connectionTimeout);
+      debugPrint('📥 Response: ${response.statusCode}');
+      return jsonDecode(response.body);
+    } catch (e) {
+      debugPrint('❌ GET Error: $e');
+      throw Exception('GET $endpoint failed: $e');
+    }
+  }
 
   // ---------------- REGISTER ----------------
   static Future<Map<String, dynamic>> register({
@@ -19,7 +78,7 @@ class ApiService {
       debugPrint('📤 Registering user: $email');
       final response = await http
           .post(
-            Uri.parse('$baseUrl/register'),
+            Uri.parse('$baseUrl/auth/register'),
             headers: {'Content-Type': 'application/json'},
             body: jsonEncode({
               'username': username,
@@ -29,9 +88,9 @@ class ApiService {
             }),
           )
           .timeout(
-            const Duration(seconds: 10),
+            connectionTimeout,
             onTimeout: () {
-              throw Exception('Registration request timed out');
+              throw Exception('Registration request timed out. Make sure the server is running and the database is accessible.');
             },
           );
 
@@ -47,9 +106,12 @@ class ApiService {
           'success': false,
         };
       }
-    } catch (e) {
-      debugPrint('❌ Registration error: $e');
-      return {'message': 'Error: $e', 'success': false};
+    } on SocketException catch (e) {
+      debugPrint('❌ Network error: $e');
+      return {
+        'message': 'Cannot reach server. Is the backend running on http://10.0.2.2:4000?',
+        'success': false,
+      };
     }
   }
 
@@ -62,14 +124,14 @@ class ApiService {
       debugPrint('📤 Logging in: $email');
       final response = await http
           .post(
-            Uri.parse('$baseUrl/login'),
+            Uri.parse('$baseUrl/auth/login'),
             headers: {'Content-Type': 'application/json'},
             body: jsonEncode({'email': email, 'password': password}),
           )
           .timeout(
-            const Duration(seconds: 10),
+            connectionTimeout,
             onTimeout: () {
-              throw Exception('Login request timed out');
+              throw Exception('Login request timed out. Make sure the server is running and the database is accessible.');
             },
           );
 
@@ -88,9 +150,10 @@ class ApiService {
 
       debugPrint('❌ Login failed: ${data['message']}');
       return false;
-    } catch (e) {
-      debugPrint('❌ Login error: $e');
+    } on SocketException catch (e) {
+      debugPrint('❌ Network error: $e');
       return false;
     }
   }
+
 }

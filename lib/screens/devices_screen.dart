@@ -5,7 +5,7 @@ import 'dart:convert';
 import '../utils/responsive_scaffold.dart';
 
 class DevicesScreen extends StatefulWidget {
-  const DevicesScreen({Key? key}) : super(key: key);
+  const DevicesScreen({super.key});
 
   @override
   _DevicesScreenState createState() => _DevicesScreenState();

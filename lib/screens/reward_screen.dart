@@ -2,10 +2,10 @@ import 'package:flutter/material.dart';
 import '../utils/responsive_scaffold.dart';
 
 class RewardsScreen extends StatefulWidget {
-  const RewardsScreen({Key? key}) : super(key: key);
+  const RewardsScreen({super.key});
 
   @override
-  _RewardsScreenState createState() => _RewardsScreenState();
+  State<RewardsScreen> createState() => _RewardsScreenState();
 }
 
 class _RewardsScreenState extends State<RewardsScreen> {
@@ -137,7 +137,7 @@ class _RewardsScreenState extends State<RewardsScreen> {
     return Container(
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.08),
+          color: Colors.white.withValues(alpha: 0.08),
         borderRadius: BorderRadius.circular(15),
         border: Border.all(color: Colors.white24),
       ),
@@ -165,7 +165,7 @@ class _RewardsScreenState extends State<RewardsScreen> {
     return Container(
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.08),
+        color: Colors.white.withValues(alpha: 0.08),
         borderRadius: BorderRadius.circular(15),
         border: Border.all(color: Colors.white24),
       ),

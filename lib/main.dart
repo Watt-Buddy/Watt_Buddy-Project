@@ -1,15 +1,23 @@
 import 'package:flutter/material.dart';
+// import 'package:firebase_core/firebase_core.dart';
+import 'services/notification_service.dart';
 import 'screens/login_register.dart';
 import 'screens/dashboard_screen.dart';
 import 'screens/profile_screen.dart';
 import 'screens/bill_history_screen.dart';
 import 'screens/reward_screen.dart';
 import 'screens/devices_screen.dart';
+import 'screens/ai_insights_screen.dart';
 
-void main() => runApp(const WattBuddyApp());
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  // await Firebase.initializeApp();
+  await NotificationService.initialize();
+  runApp(const WattBuddyApp());
+}
 
 class WattBuddyApp extends StatelessWidget {
-  const WattBuddyApp({Key? key}) : super(key: key);
+  const WattBuddyApp({super.key});
 
   @override
   Widget build(BuildContext context) {
@@ -28,6 +36,7 @@ class WattBuddyApp extends StatelessWidget {
         '/bills': (context) => BillHistoryScreen(),
         '/rewards': (context) => const RewardsScreen(),
         '/devices': (context) => const DevicesScreen(),
+        '/insights': (context) => AIInsightsScreen(userId: 'user_id_here'),
       },
     );
   }
