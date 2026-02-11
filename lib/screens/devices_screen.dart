@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:async';
+import 'package:http/http.dart' as http;
+import 'package:fl_chart/fl_chart.dart';
 
 import '../services/api_service.dart';
 import '../utils/responsive_scaffold.dart';
@@ -13,36 +15,40 @@ class DevicesScreen extends StatefulWidget {
 }
 
 class _DevicesScreenState extends State<DevicesScreen> {
-  // Relay States
   bool relay1Status = false;
   bool relay2Status = false;
   bool isLoading = false;
   bool isControlling = false;
 
-  // Sensor Data
   double voltage = 0.0;
   double current = 0.0;
   double power = 0.0;
   bool anomalyDetected = false;
   DateTime lastUpdate = DateTime.now();
 
-  // Device Names
   String relay1Name = "Device 1";
   String relay2Name = "Device 2";
-
-  // Track which relays are configured
   List<Map<String, dynamic>> devices = [];
 
   Timer? _refreshTimer;
+  
+  // Chart variables
+  List<FlSpot> powerDataPoints = [];
+  double timerCount = 0;
+  
+  // ESP32 Direct IP - Must match your Static IP in Arduino
+  final String esp32Ip = "192.168.6.203";
 
   @override
   void initState() {
     super.initState();
     _loadDeviceNames();
     _loadRelayStatus();
-    // Auto-refresh every 3 seconds
-    _refreshTimer = Timer.periodic(Duration(seconds: 3), (_) {
-      _loadRelayStatus();
+    // Refresh every 3 seconds to avoid spamming the ESP32 while it samples AC
+    _refreshTimer = Timer.periodic(const Duration(seconds: 3), (_) {
+      if (mounted) {
+        _loadRelayStatus();
+      }
     });
   }
 
@@ -102,57 +108,101 @@ class _DevicesScreenState extends State<DevicesScreen> {
   }
 
   Future<void> _loadRelayStatus() async {
-    setState(() => isLoading = true);
+    if (!mounted) return;
 
-    final status = await ApiService.getRelayStatus();
+    try {
+      // 1. Fetch from your Node.js Backend (:4000/esp32/latest)
+      final response = await ApiService.getRelayStatus();
 
-    if (status.isNotEmpty) {
-      setState(() {
-        relay1Status = status['relay1'] ?? false;
-        relay2Status = status['relay2'] ?? false;
-        voltage = (status['voltage'] ?? 0).toDouble();
-        current = (status['current'] ?? 0).toDouble();
-        power = (status['power'] ?? 0).toDouble();
-        anomalyDetected = status['anomaly'] ?? false;
-        lastUpdate = DateTime.now();
-      });
+      // Debug print to see exactly what arrives in the app
+      debugPrint('📡 RAW BACKEND RESPONSE: $response');
+
+      if (response != null && response['success'] == true) {
+        // FIX: Your backend wraps the actual readings in a 'data' map
+        final liveData = response['data']; 
+        
+        if (!mounted) return;
+        setState(() {
+          // Use liveData instead of response to avoid the 0.0 values
+          voltage = (liveData['voltage'] ?? 0.0).toDouble();
+          current = (liveData['current'] ?? 0.0).toDouble();
+          power = (liveData['power'] ?? 0.0).toDouble();
+          
+          // --- ADD TO CHART LOGIC ---
+          timerCount += 3; // Matching your 3-second timer interval
+          powerDataPoints.add(FlSpot(timerCount, power));
+          
+          // Keep only the last 20 points (last 1 minute of data)
+          if (powerDataPoints.length > 20) {
+            powerDataPoints.removeAt(0);
+          }
+          
+          // Correctly sync relay status (1 = true/ON, 0 = false/OFF)
+          if (!isControlling) {
+            relay1Status = (liveData['relay1'] == 1);
+            relay2Status = (liveData['relay2'] == 1);
+          }
+          
+          lastUpdate = DateTime.now();
+        });
+        debugPrint('✅ Values Decoded: V=$voltage, P=$power');
+      }
+    } catch (e) {
+      debugPrint('⚠️ Fetch error: $e');
+      await _loadESP32SensorData(); // Fallback to direct ESP32 if server fails
     }
-
-    setState(() => isLoading = false);
   }
 
+  Future<void> _loadESP32SensorData() async {
+    try {
+      // Targets http://192.168.6.203/api/readings directly
+      final sensorData = await ApiService.getESP32Sensors();
+      
+      if (!mounted) return;
+      if (sensorData != null && sensorData.containsKey('voltage')) {
+        setState(() {
+          voltage = (sensorData['voltage'] ?? 0.0).toDouble();
+          current = (sensorData['current'] ?? 0.0).toDouble();
+          power = (sensorData['power'] ?? 0.0).toDouble();
+          lastUpdate = DateTime.now();
+        });
+      }
+    } catch (e) {
+      debugPrint('❌ Direct ESP32 access failed: $e');
+    }
+  }
+
+  // FIXED: Direct HTTP call to the ESP32 Endpoints
   Future<void> _toggleRelay(int relayNumber) async {
+    if (isControlling) return;
+    
     setState(() => isControlling = true);
+    
+    bool currentState = (relayNumber == 1) ? relay1Status : relay2Status;
+    String action = currentState ? "off" : "on";
+    
+    // Constructing the URL: http://192.168.6.203/relay1/on
+    final url = Uri.parse("http://$esp32Ip/relay$relayNumber/$action");
 
-    bool success = false;
-    bool newState = false;
+    try {
+      debugPrint("🚀 Sending command: $url");
+      final response = await http.get(url).timeout(const Duration(seconds: 5));
 
-    if (relayNumber == 1) {
-      newState = !relay1Status;
-      success = await ApiService.controlRelay1(newState);
-    } else {
-      newState = !relay2Status;
-      success = await ApiService.controlRelay2(newState);
+      if (response.statusCode == 200) {
+        setState(() {
+          if (relayNumber == 1) relay1Status = !currentState;
+          else relay2Status = !currentState;
+        });
+        _showSuccessSnackBar("Device $relayNumber turned ${action.toUpperCase()}");
+      } else {
+        throw Exception("Server returned ${response.statusCode}");
+      }
+    } catch (e) {
+      debugPrint("❌ Control Error: $e");
+      _showErrorSnackBar("Hardware Unreachable. Check Hotspot.");
+    } finally {
+      setState(() => isControlling = false);
     }
-
-    if (success) {
-      setState(() {
-        if (relayNumber == 1) {
-          relay1Status = newState;
-        } else {
-          relay2Status = newState;
-        }
-      });
-      _showSuccessSnackBar(
-        relayNumber == 1
-            ? "Relay 1 ${newState ? 'ON' : 'OFF'}"
-            : "Relay 2 ${newState ? 'ON' : 'OFF'}",
-      );
-    } else {
-      _showErrorSnackBar("Failed to control relay $relayNumber");
-    }
-
-    setState(() => isControlling = false);
   }
 
   Future<void> _editDeviceName(int relayNumber) async {
@@ -223,6 +273,41 @@ class _DevicesScreenState extends State<DevicesScreen> {
         content: Text(message, style: TextStyle(color: Colors.white)),
         backgroundColor: Colors.red,
         duration: Duration(seconds: 2),
+      ),
+    );
+  }
+
+  // Build the live chart widget
+  Widget _buildLiveChart() {
+    return Container(
+      height: 200,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1A1A3A),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFF00D4FF), width: 1),
+      ),
+      child: LineChart(
+        LineChartData(
+          minY: 0,
+          maxY: 300, // Adjust based on your maximum expected load
+          gridData: const FlGridData(show: false),
+          titlesData: const FlTitlesData(show: false),
+          borderData: FlBorderData(show: false),
+          lineBarsData: [
+            LineChartBarData(
+              spots: powerDataPoints,
+              isCurved: true,
+              color: const Color(0xFF00D4FF),
+              barWidth: 3,
+              dotData: const FlDotData(show: false),
+              belowBarData: BarAreaData(
+                show: true,
+                color: const Color(0xFF00D4FF).withOpacity(0.1),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -489,6 +574,15 @@ class _DevicesScreenState extends State<DevicesScreen> {
                   ],
                 ),
 
+              // Power Consumption History Chart
+              Text(
+                "Power Consumption History (Watts)",
+                style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 12),
+              _buildLiveChart(),
+              const SizedBox(height: 20),
+              
               // Sensor Data Panel
               Text(
                 "Relay 1 & 2 Control",
@@ -500,82 +594,96 @@ class _DevicesScreenState extends State<DevicesScreen> {
               ),
               SizedBox(height: 12),
 
-              if (!isLoading)
-                Container(
-                  padding: EdgeInsets.all(16),
-                  decoration: BoxDecoration(
-                    color: Color(0xFF1A1A3A),
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: Color(0xFF00D4FF), width: 1),
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          Text(
-                            "Live Sensor Data",
-                            style: TextStyle(
-                              color: Color(0xFF00D4FF),
-                              fontSize: 16,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                          GestureDetector(
-                            onTap: _loadRelayStatus,
-                            child: Icon(Icons.refresh,
-                                color: Color(0xFF00D4FF), size: 20),
-                          ),
-                        ],
-                      ),
-                      SizedBox(height: 12),
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          _buildSensorMetric("Voltage", "$voltage V",
-                              Icons.electric_bolt, Color(0xFF00D4FF)),
-                          _buildSensorMetric(
-                              "Current",
-                              "$current A",
-                              Icons.flash_on,
-                              Color(0xFFFF6B6B)),
-                          _buildSensorMetric("Power", "$power W",
-                              Icons.power_settings_new, Color(0xFF4ECDC4)),
-                        ],
-                      ),
-                      SizedBox(height: 12),
-                      if (anomalyDetected)
-                        Container(
-                          padding: EdgeInsets.all(8),
-                          decoration: BoxDecoration(
-                            color: Colors.red.withOpacity(0.2),
-                            borderRadius: BorderRadius.circular(8),
-                            border: Border.all(color: Colors.red, width: 1),
-                          ),
-                          child: Row(
-                            children: [
-                              Icon(Icons.warning_rounded,
-                                  color: Colors.red, size: 16),
-                              SizedBox(width: 8),
-                              Text(
-                                "⚠️ Anomaly Detected!",
-                                style: TextStyle(
-                                  color: Colors.red,
-                                  fontWeight: FontWeight.bold,
-                                ),
-                              ),
-                            ],
+              // Live Sensor Data Section
+              Container(
+                padding: EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: Color(0xFF1A1A3A),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: Color(0xFF00D4FF), width: 1),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text(
+                          "Live Sensor Data",
+                          style: TextStyle(
+                            color: Color(0xFF00D4FF),
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
                           ),
                         ),
-                      SizedBox(height: 8),
-                      Text(
-                        "Last updated: ${lastUpdate.hour}:${lastUpdate.minute.toString().padLeft(2, '0')}",
-                        style: TextStyle(color: Colors.grey, fontSize: 12),
+                        GestureDetector(
+                          onTap: _loadRelayStatus,
+                          child: Icon(Icons.refresh,
+                              color: Color(0xFF00D4FF), size: 20),
+                        ),
+                      ],
+                    ),
+                    SizedBox(height: 12),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        _buildSensorMetric("Voltage", "${voltage.toStringAsFixed(1)} V",
+                            Icons.electric_bolt, Color(0xFF00D4FF)),
+                        _buildSensorMetric(
+                            "Current",
+                            "${current.toStringAsFixed(2)} A",
+                            Icons.flash_on,
+                            Color(0xFFFF6B6B)),
+                        _buildSensorMetric("Power", "${power.toStringAsFixed(1)} W",
+                            Icons.power_settings_new, Color(0xFF4ECDC4)),
+                      ],
+                    ),
+                    SizedBox(height: 12),
+                    if (anomalyDetected)
+                      Container(
+                        padding: EdgeInsets.all(8),
+                        decoration: BoxDecoration(
+                          color: Colors.red.withOpacity(0.2),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: Colors.red, width: 1),
+                        ),
+                        child: Row(
+                          children: [
+                            Icon(Icons.warning_rounded,
+                                color: Colors.red, size: 16),
+                            SizedBox(width: 8),
+                            Text(
+                              "⚠️ Anomaly Detected!",
+                              style: TextStyle(
+                                color: Colors.red,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
-                    ],
-                  ),
+                    SizedBox(height: 8),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text(
+                          "Last updated: ${lastUpdate.hour}:${lastUpdate.minute.toString().padLeft(2, '0')}:${lastUpdate.second.toString().padLeft(2, '0')}",
+                          style: TextStyle(color: Colors.grey, fontSize: 12),
+                        ),
+                        if (isLoading)
+                          SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              valueColor: AlwaysStoppedAnimation<Color>(Color(0xFF00D4FF)),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ],
                 ),
+              ),
 
               SizedBox(height: 30),
 
@@ -781,18 +889,19 @@ class _DevicesScreenState extends State<DevicesScreen> {
               ),
               GestureDetector(
                 onTap: isControlling ? null : () => _toggleRelay(relayNumber),
-                child: Container(
-                  width: 70,
-                  height: 70,
-                  decoration: BoxDecoration(
-                    color: color.withOpacity(0.1),
-                    shape: BoxShape.circle,
-                    border: Border.all(color: color, width: 2),
-                  ),
-                  child: Icon(
-                    status ? Icons.power_settings_new : Icons.power_settings_new,
-                    color: status ? color : Colors.grey,
-                    size: 32,
+                child: Opacity(
+                  opacity: isControlling ? 0.5 : 1.0,
+                  child: Container(
+                    width: 70,
+                    height: 70,
+                    decoration: BoxDecoration(
+                      color: color.withOpacity(0.1),
+                      shape: BoxShape.circle,
+                      border: Border.all(color: status ? color : Colors.grey, width: 2),
+                    ),
+                    child: isControlling 
+                      ? CircularProgressIndicator(color: color, strokeWidth: 2)
+                      : Icon(Icons.power_settings_new, color: status ? color : Colors.grey, size: 32),
                   ),
                 ),
               ),

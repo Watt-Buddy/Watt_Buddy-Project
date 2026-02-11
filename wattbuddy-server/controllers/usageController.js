@@ -220,3 +220,89 @@ exports.getUsageForecast = async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 };
+
+// ============ NEW: Get usage summary for bill predictor ============
+// Fetches current month, last month, and historical average power consumption
+exports.getUsageSummary = async (req, res) => {
+  const { userId } = req.params;
+
+  try {
+    const db = require('../db');
+
+    // Query combining current month, last month, and historical averages
+    const query = `
+      SELECT 
+        COALESCE(SUM(CASE WHEN timestamp >= DATE_TRUNC('month', CURRENT_DATE) 
+                         THEN energy_consumed ELSE 0 END), 0) as current_month_kwh,
+        COALESCE(SUM(CASE WHEN timestamp >= DATE_TRUNC('month', CURRENT_DATE - INTERVAL '1 month') 
+                         AND timestamp < DATE_TRUNC('month', CURRENT_DATE) 
+                         THEN energy_consumed ELSE 0 END), 0) as last_month_kwh,
+        COALESCE(AVG(power), 0) as historical_avg_power,
+        COALESCE(MAX(power), 0) as peak_power,
+        COALESCE(COUNT(*), 0) as readings_this_month
+      FROM "EnergyReadings"
+      WHERE user_id = $1
+    `;
+
+    const result = await db.query(query, [userId]);
+    const data = result.rows[0];
+
+    // Get current live power from cache (exported from server.js)
+    let { esp32LatestData } = require('../server');
+    const currentPower = esp32LatestData.power || 0;
+    // Baseline average (use your logs as baseline if no historical data)
+    const avgPower = parseFloat(data.historical_avg_power) || 75;
+
+    // Demo logic: trigger only for strong anomalies (>= 2x)
+    let isAbnormal = false;
+    let anomalySocket = "None";
+
+    if (currentPower > (avgPower * 2.0)) {
+      isAbnormal = true;
+
+      // Pinpoint likely socket by relay states
+      if (esp32LatestData.relay1 === 1 && esp32LatestData.relay2 === 0) anomalySocket = "Socket 1";
+      else if (esp32LatestData.relay2 === 1 && esp32LatestData.relay1 === 0) anomalySocket = "Socket 2";
+      else anomalySocket = "Both Sockets";
+
+      console.log(`\u26a0\ufe0f DEMO-ANOMALY: Current ${currentPower}W >= 2x Avg ${avgPower}W | Source: ${anomalySocket}`);
+    }
+
+    // Calculate days elapsed in current month
+    const today = moment();
+    const daysElapsed = today.date();
+    const daysInMonth = today.daysInMonth();
+
+    // Calculate predicted usage for current month (based on daily average)
+    const dailyAverageThisMonth = daysElapsed > 0 
+      ? data.current_month_kwh / daysElapsed 
+      : 0;
+    const predictedMonthlyKwh = dailyAverageThisMonth * daysInMonth;
+
+    // Calculate month-over-month change
+    const monthChange = data.last_month_kwh > 0 
+      ? ((data.current_month_kwh - data.last_month_kwh) / data.last_month_kwh * 100).toFixed(1)
+      : 0;
+
+    res.json({
+      success: true,
+      isAbnormal: isAbnormal,
+      anomalySocket: anomalySocket,
+      currentMonthKwh: parseFloat(data.current_month_kwh) || 0,
+      lastMonthKwh: parseFloat(data.last_month_kwh) || 0,
+      historicalAvgPower: parseFloat(data.historical_avg_power) || 0,
+      currentPower: currentPower,
+      peakPowerRecorded: parseFloat(data.peak_power) || 0,
+      readingsThisMonth: parseInt(data.readings_this_month) || 0,
+      daysElapsed: daysElapsed,
+      daysInMonth: daysInMonth,
+      dailyAverageThisMonth: dailyAverageThisMonth.toFixed(2),
+      predictedMonthlyKwh: predictedMonthlyKwh.toFixed(2),
+      monthOverMonthChangePercent: monthChange,
+      timestamp: new Date().toISOString()
+    });
+  } catch (err) {
+    console.error('❌ Error fetching usage summary:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+};

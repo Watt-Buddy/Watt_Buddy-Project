@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
+import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
+import 'dart:convert';
 
 import '../services/api_service.dart';
 
@@ -97,9 +100,40 @@ class _LoginRegisterScreenState extends State<LoginRegisterScreen> {
     if (!mounted) return;
 
     if (success) {
+      // Get the user ID from SharedPreferences to provision hardware
+      final prefs = await SharedPreferences.getInstance();
+      final userJson = prefs.getString('wattBuddyUser');
+      
+      if (userJson != null) {
+        final user = jsonDecode(userJson);
+        final String userId = user['id'].toString();
+        
+        // Trigger automatic hardware provisioning
+        await provisionHardware(userId);
+      }
+      
       Navigator.pushReplacementNamed(context, '/dashboard');
     } else {
       _showSnack("Invalid credentials");
+    }
+  }
+
+  // Logic to tell ESP32 which user is active
+  Future<void> provisionHardware(String userId) async {
+    try {
+      // Your ESP32 local IP from the C++ code
+      final String espUrl = 'http://192.168.6.203/set-user?id=$userId';
+      
+      final response = await http.get(Uri.parse(espUrl)).timeout(
+        const Duration(seconds: 5),
+      );
+
+      if (response.statusCode == 200) {
+        debugPrint('✅ Hardware provisioned for User $userId');
+      }
+    } catch (e) {
+      // If user is not on the same WiFi as the ESP32, this will fail gracefully
+      debugPrint('⚠️ Hardware sync skipped: ESP32 not found on local network.');
     }
   }
 

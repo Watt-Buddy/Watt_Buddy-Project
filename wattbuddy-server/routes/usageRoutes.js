@@ -9,6 +9,7 @@ const {
   getUsageAlerts,
   resolveAlert,
   getUsageForecast,
+  getUsageSummary,
 } = require('../controllers/usageController');
 
 // Daily usage
@@ -26,5 +27,8 @@ router.post('/alerts/resolve', resolveAlert);
 
 // Forecast
 router.get('/forecast/:userId', getUsageForecast);
+
+// ============ NEW: Usage Summary for Bill Predictor ============
+router.get('/summary/:userId', getUsageSummary);
 
 module.exports = router;

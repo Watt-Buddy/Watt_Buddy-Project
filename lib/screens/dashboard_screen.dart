@@ -23,18 +23,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
   // ---------------- ESP32 DATA ----------------
   Map<String, dynamic>? esp32Data;
   Timer? _refreshTimer;
-  
-  // ---------------- STATIC DATA (UNCHANGED) ----------------
-  final List<double> monthlyUsage = [110, 130, 145, 140, 155, 135, 124];
-  final List<String> months = ['Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct'];
 
-  final List<Map<String, dynamic>> recentBills = [
-    {'period': "Oct-Nov '25", 'amount': 925.50, 'status': 'paid'},
-    {'period': "Sep-Oct '25", 'amount': 870.50, 'status': 'due'},
-    {'period': "Aug-Sep '25", 'amount': 795.00, 'status': 'paid'},
-    {'period': "Jul-Aug '25", 'amount': 910.20, 'status': 'paid'},
-    {'period': "Jun-Jul '25", 'amount': 850.75, 'status': 'paid'},
-  ];
+
 
   // ---------------- INIT ----------------
   @override
@@ -71,16 +61,19 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Future<void> _loadEsp32Data() async {
     try {
       final response = await http.get(
-        Uri.parse('http://192.168.233.214:4000/api/esp32/latest'),
+        Uri.parse('http://192.168.6.214:4000/esp32/latest'),
       );
 
       if (response.statusCode == 200 && response.body.isNotEmpty) {
-        setState(() {
-          esp32Data = jsonDecode(response.body);
-        });
+        final responseData = jsonDecode(response.body);
+        if (responseData['success'] == true) {
+          setState(() {
+            esp32Data = responseData['data'];
+          });
+        }
       }
     } catch (e) {
-      debugPrint('❌ ESP32 fetch error: \$e');
+      debugPrint('❌ ESP32 fetch error: $e');
     }
   }
 
@@ -236,30 +229,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
             ),
 
             const SizedBox(height: 30),
-
-            // CHART + BILLS (UNCHANGED)
-            LayoutBuilder(
-              builder: (context, constraints) {
-                if (constraints.maxWidth < 900) {
-                  return Column(
-                    children: [
-                      _usageChart(),
-                      const SizedBox(height: 20),
-                      _recentBillsCard(),
-                    ],
-                  );
-                } else {
-                  return Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Expanded(flex: 2, child: _usageChart()),
-                      const SizedBox(width: 20),
-                      Expanded(child: _recentBillsCard()),
-                    ],
-                  );
-                }
-              },
-            ),
           ],
         ),
         ),
@@ -303,145 +272,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
       ),
     );
   }
-
-  // ------------------ CHART (UNCHANGED) ------------------
-  Widget _usageChart() {
-    final isMobile = MediaQuery.of(context).size.width < 600;
-
-    return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: 0.08),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: Colors.white24),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text(
-            "Monthly Usage (kWh)",
-            style: TextStyle(
-              color: Colors.white,
-              fontSize: 18,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-          const SizedBox(height: 15),
-          SizedBox(
-            height: isMobile ? 200 : 260,
-            child: LineChart(
-              LineChartData(
-                minY: 100,
-                maxY: 160,
-                gridData: FlGridData(show: false),
-                titlesData: FlTitlesData(
-                  rightTitles: const AxisTitles(
-                      sideTitles: SideTitles(showTitles: false)),
-                  topTitles: const AxisTitles(
-                      sideTitles: SideTitles(showTitles: false)),
-                  leftTitles: AxisTitles(
-                    sideTitles: SideTitles(
-                      showTitles: true,
-                      reservedSize: 30,
-                      getTitlesWidget: (value, _) => Text(
-                        value.toInt().toString(),
-                        style: const TextStyle(
-                          color: Colors.white70,
-                          fontSize: 10,
-                        ),
-                      ),
-                    ),
-                  ),
-                  bottomTitles: AxisTitles(
-                    sideTitles: SideTitles(
-                      showTitles: true,
-                      getTitlesWidget: (value, _) {
-                        if (value.toInt() < months.length) {
-                          return Text(
-                            months[value.toInt()],
-                            style: const TextStyle(
-                              color: Colors.white70,
-                              fontSize: 10,
-                            ),
-                          );
-                        }
-                        return const SizedBox();
-                      },
-                    ),
-                  ),
-                ),
-                borderData: FlBorderData(show: false),
-                lineBarsData: [
-                  LineChartBarData(
-                    spots: monthlyUsage
-                        .asMap()
-                        .entries
-                        .map(
-                          (e) => FlSpot(e.key.toDouble(), e.value),
-                        )
-                        .toList(),
-                    isCurved: true,
-                    color: Colors.cyanAccent,
-                    barWidth: 2.5,
-                    dotData: const FlDotData(show: false),
-                    belowBarData: BarAreaData(
-                      show: true,
-                      color: Colors.cyan.withValues(alpha: 0.2),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  // ------------------ RECENT BILLS (UNCHANGED) ------------------
-  Widget _recentBillsCard() {
-    return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: 0.08),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: Colors.white24),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text(
-            "Recent Bills",
-            style: TextStyle(
-              color: Colors.white,
-              fontSize: 18,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-          const SizedBox(height: 10),
-          ...recentBills.map((bill) {
-            return Padding(
-              padding: const EdgeInsets.symmetric(vertical: 8),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Text(bill['period'],
-                      style: const TextStyle(color: Colors.white70)),
-                  Text(
-                    "₹\${bill['amount']}",
-                    style: TextStyle(
-                      color: bill['status'] == 'paid'
-                          ? Colors.green
-                          : Colors.orange,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                ],
-              ),
-            );
-          }),
-        ],
-      ),
-    );
-  }
 }
+
+
