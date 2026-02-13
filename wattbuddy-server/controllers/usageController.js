@@ -229,23 +229,44 @@ exports.getUsageSummary = async (req, res) => {
   try {
     const db = require('../db');
 
-    // Query combining current month, last month, and historical averages
+    // Use delta-based aggregation: sum positive differences between consecutive readings
     const query = `
-      SELECT 
-        COALESCE(SUM(CASE WHEN timestamp >= DATE_TRUNC('month', CURRENT_DATE) 
-                         THEN energy_consumed ELSE 0 END), 0) as current_month_kwh,
-        COALESCE(SUM(CASE WHEN timestamp >= DATE_TRUNC('month', CURRENT_DATE - INTERVAL '1 month') 
-                         AND timestamp < DATE_TRUNC('month', CURRENT_DATE) 
-                         THEN energy_consumed ELSE 0 END), 0) as last_month_kwh,
-        COALESCE(AVG(power), 0) as historical_avg_power,
-        COALESCE(MAX(power), 0) as peak_power,
-        COALESCE(COUNT(*), 0) as readings_this_month
-      FROM "EnergyReadings"
-      WHERE user_id = $1
+      WITH current_deltas AS (
+        SELECT COALESCE(SUM(CASE WHEN delta > 0 THEN delta ELSE 0 END), 0) AS current_month_kwh
+        FROM (
+          SELECT
+            energy_consumed,
+            timestamp,
+            energy_consumed - LAG(energy_consumed) OVER (ORDER BY timestamp) AS delta
+          FROM "EnergyReadings"
+          WHERE user_id = $1::text
+            AND timestamp >= DATE_TRUNC('month', CURRENT_DATE)
+        ) t
+      ),
+      last_deltas AS (
+        SELECT COALESCE(SUM(CASE WHEN delta > 0 THEN delta ELSE 0 END), 0) AS last_month_kwh
+        FROM (
+          SELECT
+            energy_consumed,
+            timestamp,
+            energy_consumed - LAG(energy_consumed) OVER (ORDER BY timestamp) AS delta
+          FROM "EnergyReadings"
+          WHERE user_id = $1::text
+            AND timestamp >= DATE_TRUNC('month', CURRENT_DATE - INTERVAL '1 month')
+            AND timestamp < DATE_TRUNC('month', CURRENT_DATE)
+        ) t
+      )
+      SELECT
+        cd.current_month_kwh,
+        ld.last_month_kwh,
+        (SELECT COALESCE(AVG(power), 0) FROM "EnergyReadings" WHERE user_id = $1::text) AS historical_avg_power,
+        (SELECT COALESCE(MAX(power), 0) FROM "EnergyReadings" WHERE user_id = $1::text) AS peak_power,
+        (SELECT COALESCE(COUNT(*), 0) FROM "EnergyReadings" WHERE user_id = $1::text AND timestamp >= DATE_TRUNC('month', CURRENT_DATE)) AS readings_this_month
+      FROM current_deltas cd, last_deltas ld;
     `;
 
     const result = await db.query(query, [userId]);
-    const data = result.rows[0];
+    const data = result.rows[0] || { current_month_kwh: 0, last_month_kwh: 0, historical_avg_power: 0, peak_power: 0, readings_this_month: 0 };
 
     // Get current live power from cache (exported from server.js)
     let { esp32LatestData } = require('../server');

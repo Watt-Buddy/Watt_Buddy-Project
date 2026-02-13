@@ -47,21 +47,50 @@ class RealtimeGraphService {
     try {
       const startTime = new Date(Date.now() - minutes * 60 * 1000);
 
-      const result = await db.query(
-        `SELECT 
-           recorded_at as timestamp,
-           power_consumption as power,
-           voltage,
-           current,
-           temperature,
-           power_factor
-         FROM energy_readings
-         WHERE user_id = $1 AND recorded_at >= $2
-         ORDER BY recorded_at ASC`,
-        [userId, startTime]
-      );
+      // Try first schema (lowercase table/columns)
+      try {
+        const res1 = await db.query(
+          `SELECT 
+             recorded_at as timestamp,
+             power_consumption as power,
+             voltage,
+             current
+           FROM energy_readings
+           WHERE user_id = $1 AND recorded_at >= $2
+           ORDER BY recorded_at ASC`,
+          [userId, startTime]
+        );
 
-      return result.rows;
+        if (res1.rows && res1.rows.length > 0) return res1.rows;
+      } catch (e) {
+        // ignore and try alternative schema
+      }
+
+      // Fallback: older schema uses "EnergyReadings" with different column names
+      try {
+        const res2 = await db.query(
+          `SELECT 
+             timestamp as timestamp,
+             power as power,
+             voltage as voltage,
+             current as current
+           FROM "EnergyReadings"
+           WHERE user_id = $1 AND timestamp >= $2
+           ORDER BY timestamp ASC`,
+          [userId, startTime]
+        );
+
+        // Map to unified format
+        return (res2.rows || []).map(r => ({
+          timestamp: r.timestamp,
+          power: r.power,
+          voltage: r.voltage,
+          current: r.current,
+        }));
+      } catch (e) {
+        console.error('❌ Both live-graph queries failed:', e);
+        return [];
+      }
     } catch (error) {
       console.error('❌ Error fetching live graph data:', error);
       return [];

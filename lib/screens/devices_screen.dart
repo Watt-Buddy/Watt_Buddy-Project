@@ -5,6 +5,7 @@ import 'package:http/http.dart' as http;
 import 'package:fl_chart/fl_chart.dart';
 
 import '../services/api_service.dart';
+import '../services/realtime_anomaly_service.dart';
 import '../utils/responsive_scaffold.dart';
 
 class DevicesScreen extends StatefulWidget {
@@ -25,6 +26,10 @@ class _DevicesScreenState extends State<DevicesScreen> {
   double power = 0.0;
   bool anomalyDetected = false;
   DateTime lastUpdate = DateTime.now();
+  
+  // Anomaly detection state
+  Map<String, dynamic>? _lastAnomalyData;
+  bool _isAnomalyServiceConnected = false;
 
   String relay1Name = "Device 1";
   String relay2Name = "Device 2";
@@ -34,6 +39,8 @@ class _DevicesScreenState extends State<DevicesScreen> {
   
   // Chart variables
   List<FlSpot> powerDataPoints = [];
+  List<FlSpot> voltageDataPoints = [];
+  List<FlSpot> currentDataPoints = [];
   double timerCount = 0;
   
   // ESP32 Direct IP - Must match your Static IP in Arduino
@@ -44,6 +51,7 @@ class _DevicesScreenState extends State<DevicesScreen> {
     super.initState();
     _loadDeviceNames();
     _loadRelayStatus();
+    _initializeAnomalyDetection();
     // Refresh every 3 seconds to avoid spamming the ESP32 while it samples AC
     _refreshTimer = Timer.periodic(const Duration(seconds: 3), (_) {
       if (mounted) {
@@ -51,10 +59,154 @@ class _DevicesScreenState extends State<DevicesScreen> {
       }
     });
   }
+  
+  // Initialize real-time anomaly detection
+  Future<void> _initializeAnomalyDetection() async {
+    await RealtimeAnomalyService.initialize(
+      onAnomalyAlert: (data) {
+        setState(() {
+          _lastAnomalyData = data;
+          anomalyDetected = data['isAbnormal'] == true;
+          _isAnomalyServiceConnected = RealtimeAnomalyService.isConnected;
+        });
+        
+        // Show alert dialog
+        _showAnomalyAlertDialog(
+          socketName: data['anomalySocket'] ?? 'Unknown Socket',
+          power: (data['currentPower'] ?? 0).toDouble(),
+          threshold: (data['threshold'] ?? 150).toDouble(),
+          message: data['message'] ?? 'High power usage detected',
+        );
+      },
+      onRelayStatusChanged: (data) {
+        // Update relay status from Socket.io updates
+        debugPrint('🔌 Relay status updated via Socket.io: $data');
+      },
+    );
+    
+    setState(() {
+      _isAnomalyServiceConnected = RealtimeAnomalyService.isConnected;
+    });
+  }
+  
+  // Show anomaly alert dialog
+  void _showAnomalyAlertDialog({
+    required String socketName,
+    required double power,
+    required double threshold,
+    required String message,
+  }) {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        backgroundColor: const Color(0xFF1A1A3A),
+        title: Row(
+          children: [
+            const Icon(Icons.warning_rounded, color: Colors.red, size: 28),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                '⚠️ Power Spike Alert',
+                style: const TextStyle(
+                  color: Colors.red,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 18,
+                ),
+              ),
+            ),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              message,
+              style: const TextStyle(color: Colors.white70, fontSize: 14),
+            ),
+            const SizedBox(height: 16),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.red.withOpacity(0.2),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: Colors.red, width: 1),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Current Power: ${power.toStringAsFixed(0)} W',
+                    style: const TextStyle(
+                      color: Colors.redAccent,
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    'Threshold: ${threshold.toStringAsFixed(0)} W',
+                    style: const TextStyle(color: Colors.white70, fontSize: 12),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    'Source: $socketName',
+                    style: const TextStyle(color: Colors.cyanAccent, fontSize: 14),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.pop(context);
+            },
+            child: const Text(
+              'Dismiss',
+              style: TextStyle(color: Colors.white70),
+            ),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.red,
+            ),
+            onPressed: () async {
+              Navigator.pop(context);
+              await _turnOffAnomalySocket(socketName);
+            },
+            child: const Text(
+              'Turn Off Socket',
+              style: TextStyle(color: Colors.white),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+  
+  // Turn off socket causing anomaly
+  Future<void> _turnOffAnomalySocket(String socketName) async {
+    final success = await RealtimeAnomalyService.turnOffSocket(socketName);
+    if (success && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('✅ $socketName turned OFF due to high power usage'),
+          backgroundColor: Colors.green,
+          duration: const Duration(seconds: 3),
+        ),
+      );
+      // Refresh relay status
+      _loadRelayStatus();
+    }
+  }
 
   @override
   void dispose() {
     _refreshTimer?.cancel();
+    RealtimeAnomalyService.disconnect();
     super.dispose();
   }
 
@@ -117,89 +269,92 @@ class _DevicesScreenState extends State<DevicesScreen> {
       // Debug print to see exactly what arrives in the app
       debugPrint('📡 RAW BACKEND RESPONSE: $response');
 
-      if (response != null && response['success'] == true) {
-        // FIX: Your backend wraps the actual readings in a 'data' map
-        final liveData = response['data']; 
+      // Check if response is valid and not empty
+      if (response.isNotEmpty) {
+        // Handle both direct data and nested data structure
+        final liveData = response['data'] ?? response;
+        
+        if (liveData.isEmpty) {
+          debugPrint('⚠️ No data in response');
+          return;
+        }
         
         if (!mounted) return;
         setState(() {
           // Use liveData instead of response to avoid the 0.0 values
-          voltage = (liveData['voltage'] ?? 0.0).toDouble();
-          current = (liveData['current'] ?? 0.0).toDouble();
-          power = (liveData['power'] ?? 0.0).toDouble();
+          voltage = ((liveData['voltage'] ?? 0.0) as num).toDouble();
+          current = ((liveData['current'] ?? 0.0) as num).toDouble();
+          power = ((liveData['power'] ?? 0.0) as num).toDouble();
           
-          // --- ADD TO CHART LOGIC ---
+          debugPrint('✅ Raw Values from backend: V=$voltage, I=$current, P=$power');
+          
+          // --- ADD TO CHART LOGIC (only add if power is non-zero) ---
           timerCount += 3; // Matching your 3-second timer interval
           powerDataPoints.add(FlSpot(timerCount, power));
+          voltageDataPoints.add(FlSpot(timerCount, voltage));
+          currentDataPoints.add(FlSpot(timerCount, current));
           
           // Keep only the last 20 points (last 1 minute of data)
-          if (powerDataPoints.length > 20) {
-            powerDataPoints.removeAt(0);
-          }
+          if (powerDataPoints.length > 20) powerDataPoints.removeAt(0);
+          if (voltageDataPoints.length > 20) voltageDataPoints.removeAt(0);
+          if (currentDataPoints.length > 20) currentDataPoints.removeAt(0);
+          
+          debugPrint('📊 Chart Points: ${powerDataPoints.length}, Latest: ${power.toStringAsFixed(2)}W');
           
           // Correctly sync relay status (1 = true/ON, 0 = false/OFF)
           if (!isControlling) {
-            relay1Status = (liveData['relay1'] == 1);
-            relay2Status = (liveData['relay2'] == 1);
+            relay1Status = ((liveData['relay1'] ?? 0) as num).toInt() == 1;
+            relay2Status = ((liveData['relay2'] ?? 0) as num).toInt() == 1;
           }
           
           lastUpdate = DateTime.now();
         });
-        debugPrint('✅ Values Decoded: V=$voltage, P=$power');
+        debugPrint('✅ Values Decoded: V=$voltage, I=$current, P=$power, R1=$relay1Status, R2=$relay2Status');
+      } else {
+        debugPrint('⚠️ Empty response from backend');
       }
     } catch (e) {
       debugPrint('⚠️ Fetch error: $e');
-      await _loadESP32SensorData(); // Fallback to direct ESP32 if server fails
+      // No fallback - use backend bridge exclusively
     }
   }
 
-  Future<void> _loadESP32SensorData() async {
-    try {
-      // Targets http://192.168.6.203/api/readings directly
-      final sensorData = await ApiService.getESP32Sensors();
-      
-      if (!mounted) return;
-      if (sensorData != null && sensorData.containsKey('voltage')) {
-        setState(() {
-          voltage = (sensorData['voltage'] ?? 0.0).toDouble();
-          current = (sensorData['current'] ?? 0.0).toDouble();
-          power = (sensorData['power'] ?? 0.0).toDouble();
-          lastUpdate = DateTime.now();
-        });
-      }
-    } catch (e) {
-      debugPrint('❌ Direct ESP32 access failed: $e');
-    }
-  }
-
-  // FIXED: Direct HTTP call to the ESP32 Endpoints
+  // FIXED: Use Backend Bridge API for relay control
   Future<void> _toggleRelay(int relayNumber) async {
     if (isControlling) return;
     
     setState(() => isControlling = true);
     
     bool currentState = (relayNumber == 1) ? relay1Status : relay2Status;
-    String action = currentState ? "off" : "on";
-    
-    // Constructing the URL: http://192.168.6.203/relay1/on
-    final url = Uri.parse("http://$esp32Ip/relay$relayNumber/$action");
+    bool newState = !currentState;
 
     try {
-      debugPrint("🚀 Sending command: $url");
-      final response = await http.get(url).timeout(const Duration(seconds: 5));
-
-      if (response.statusCode == 200) {
-        setState(() {
-          if (relayNumber == 1) relay1Status = !currentState;
-          else relay2Status = !currentState;
-        });
-        _showSuccessSnackBar("Device $relayNumber turned ${action.toUpperCase()}");
+      debugPrint("🚀 Sending relay $relayNumber command: ${newState ? 'ON' : 'OFF'}");
+      
+      bool success;
+      // Directly control ESP32 relays so the physical device toggles ON/OFF
+      if (relayNumber == 1) {
+        success = newState
+            ? await ApiService.controlESP32Relay1On()
+            : await ApiService.controlESP32Relay1Off();
       } else {
-        throw Exception("Server returned ${response.statusCode}");
+        success = newState
+            ? await ApiService.controlESP32Relay2On()
+            : await ApiService.controlESP32Relay2Off();
+      }
+
+      if (success) {
+        setState(() {
+          if (relayNumber == 1) relay1Status = newState;
+          else relay2Status = newState;
+        });
+        _showSuccessSnackBar("Device $relayNumber turned ${newState ? 'ON' : 'OFF'}");
+      } else {
+        throw Exception("Backend API returned failure");
       }
     } catch (e) {
       debugPrint("❌ Control Error: $e");
-      _showErrorSnackBar("Hardware Unreachable. Check Hotspot.");
+      _showErrorSnackBar("Failed to control device. Ensure server is running.");
     } finally {
       setState(() => isControlling = false);
     }
@@ -277,8 +432,12 @@ class _DevicesScreenState extends State<DevicesScreen> {
     );
   }
 
-  // Build the live chart widget
+  // Build the live chart widget (single graph with Power, Voltage, Current)
   Widget _buildLiveChart() {
+    final latestPower = powerDataPoints.isNotEmpty ? powerDataPoints.last.y : 0.0;
+    final latestVoltage = voltageDataPoints.isNotEmpty ? voltageDataPoints.last.y : 0.0;
+    final latestCurrent = currentDataPoints.isNotEmpty ? currentDataPoints.last.y : 0.0;
+
     return Container(
       height: 200,
       padding: const EdgeInsets.all(16),
@@ -287,27 +446,130 @@ class _DevicesScreenState extends State<DevicesScreen> {
         borderRadius: BorderRadius.circular(12),
         border: Border.all(color: const Color(0xFF00D4FF), width: 1),
       ),
-      child: LineChart(
-        LineChartData(
-          minY: 0,
-          maxY: 300, // Adjust based on your maximum expected load
-          gridData: const FlGridData(show: false),
-          titlesData: const FlTitlesData(show: false),
-          borderData: FlBorderData(show: false),
-          lineBarsData: [
-            LineChartBarData(
-              spots: powerDataPoints,
-              isCurved: true,
-              color: const Color(0xFF00D4FF),
-              barWidth: 3,
-              dotData: const FlDotData(show: false),
-              belowBarData: BarAreaData(
+      child: Stack(
+        children: [
+          LineChart(
+            LineChartData(
+              minY: 0,
+              maxY: 300, // Adjust based on your maximum expected load / mains
+              gridData: FlGridData(
                 show: true,
-                color: const Color(0xFF00D4FF).withOpacity(0.1),
+                drawVerticalLine: false,
+                horizontalInterval: 50,
+                getDrawingHorizontalLine: (value) => FlLine(
+                  color: Colors.white.withOpacity(0.04),
+                  strokeWidth: 1,
+                ),
+              ),
+              titlesData: FlTitlesData(
+                leftTitles: AxisTitles(
+                  sideTitles: SideTitles(
+                    showTitles: true,
+                    reservedSize: 40,
+                    interval: 50,
+                    getTitlesWidget: (value, meta) {
+                      // show tidy Y axis labels at 0,50,100...
+                      if (value % 50 != 0) return const SizedBox.shrink();
+                      return SideTitleWidget(
+                        axisSide: meta.axisSide,
+                        child: Text(
+                          value.toInt().toString(),
+                          style: const TextStyle(color: Colors.white70, fontSize: 12),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+                bottomTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                topTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                rightTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
+              ),
+              borderData: FlBorderData(show: false),
+              lineTouchData: LineTouchData(
+                handleBuiltInTouches: true,
+                touchTooltipData: LineTouchTooltipData(
+                  tooltipBgColor: Colors.black87,
+                  getTooltipItems: (spots) {
+                    return spots.map((s) {
+                      return LineTooltipItem(
+                        '${s.y.toStringAsFixed(1)} W',
+                        const TextStyle(color: Colors.white),
+                      );
+                    }).toList();
+                  },
+                ),
+              ),
+              lineBarsData: [
+                // Power line (Watts)
+                LineChartBarData(
+                  spots: powerDataPoints,
+                  isCurved: true,
+                  color: const Color(0xFF00D4FF),
+                  barWidth: 3,
+                  dotData: const FlDotData(show: false),
+                  belowBarData: BarAreaData(
+                    show: true,
+                    gradient: LinearGradient(
+                      begin: Alignment.topCenter,
+                      end: Alignment.bottomCenter,
+                      colors: [
+                        const Color(0xFF00D4FF).withOpacity(0.18),
+                        const Color(0xFF00D4FF).withOpacity(0.02),
+                      ],
+                    ),
+                  ),
+                ),
+                // Voltage line (Volts)
+                LineChartBarData(
+                  spots: voltageDataPoints,
+                  isCurved: true,
+                  color: const Color(0xFF4ECDC4),
+                  barWidth: 2,
+                  dotData: const FlDotData(show: false),
+                ),
+                // Current line (Amps) – same axis for simplicity
+                LineChartBarData(
+                  spots: currentDataPoints,
+                  isCurved: true,
+                  color: const Color(0xFFFF6B6B),
+                  barWidth: 2,
+                  dotData: const FlDotData(show: false),
+                ),
+              ],
+            ),
+          ),
+
+          // Latest value badge (shows all three)
+          Positioned(
+            top: 8,
+            right: 8,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              decoration: BoxDecoration(
+                color: Colors.black.withOpacity(0.45),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: const Color(0xFF00D4FF).withOpacity(0.18)),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  Text(
+                    '${latestPower.toStringAsFixed(1)} W',
+                    style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12),
+                  ),
+                  Text(
+                    '${latestVoltage.toStringAsFixed(1)} V',
+                    style: TextStyle(color: Colors.white.withOpacity(0.9), fontSize: 11),
+                  ),
+                  Text(
+                    '${latestCurrent.toStringAsFixed(3)} A',
+                    style: TextStyle(color: Colors.white.withOpacity(0.8), fontSize: 11),
+                  ),
+                ],
               ),
             ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }
@@ -576,12 +838,12 @@ class _DevicesScreenState extends State<DevicesScreen> {
 
               // Power Consumption History Chart
               Text(
-                "Power Consumption History (Watts)",
+                "Live Consumption (Power / V / A)",
                 style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
               ),
               const SizedBox(height: 12),
               _buildLiveChart(),
-              const SizedBox(height: 20),
+              const SizedBox(height: 24),
               
               // Sensor Data Panel
               Text(
@@ -639,29 +901,72 @@ class _DevicesScreenState extends State<DevicesScreen> {
                       ],
                     ),
                     SizedBox(height: 12),
-                    if (anomalyDetected)
+                    // Anomaly Status Indicator
+                    if (anomalyDetected || _lastAnomalyData != null)
                       Container(
-                        padding: EdgeInsets.all(8),
+                        padding: EdgeInsets.all(12),
                         decoration: BoxDecoration(
                           color: Colors.red.withOpacity(0.2),
                           borderRadius: BorderRadius.circular(8),
-                          border: Border.all(color: Colors.red, width: 1),
+                          border: Border.all(color: Colors.red, width: 2),
                         ),
-                        child: Row(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Icon(Icons.warning_rounded,
-                                color: Colors.red, size: 16),
-                            SizedBox(width: 8),
-                            Text(
-                              "⚠️ Anomaly Detected!",
-                              style: TextStyle(
-                                color: Colors.red,
-                                fontWeight: FontWeight.bold,
-                              ),
+                            Row(
+                              children: [
+                                Icon(Icons.warning_rounded,
+                                    color: Colors.red, size: 20),
+                                SizedBox(width: 8),
+                                Text(
+                                  "⚠️ Anomaly Detected!",
+                                  style: TextStyle(
+                                    color: Colors.red,
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 16,
+                                  ),
+                                ),
+                              ],
                             ),
+                            if (_lastAnomalyData != null) ...[
+                              SizedBox(height: 8),
+                              Text(
+                                _lastAnomalyData!['message'] ?? 'High power usage detected',
+                                style: TextStyle(color: Colors.white70, fontSize: 12),
+                              ),
+                              SizedBox(height: 4),
+                              Text(
+                                'Power: ${(_lastAnomalyData!['currentPower'] ?? 0).toStringAsFixed(0)}W | Source: ${_lastAnomalyData!['anomalySocket'] ?? 'Unknown'}',
+                                style: TextStyle(color: Colors.redAccent, fontSize: 11),
+                              ),
+                            ],
                           ],
                         ),
                       ),
+                    // Socket.io Connection Status
+                    SizedBox(height: 8),
+                    Row(
+                      children: [
+                        Container(
+                          width: 8,
+                          height: 8,
+                          decoration: BoxDecoration(
+                            color: _isAnomalyServiceConnected ? Colors.green : Colors.red,
+                            shape: BoxShape.circle,
+                          ),
+                        ),
+                        SizedBox(width: 6),
+                        Text(
+                          _isAnomalyServiceConnected 
+                              ? 'Real-time monitoring active' 
+                              : 'Real-time monitoring offline',
+                          style: TextStyle(
+                            color: _isAnomalyServiceConnected ? Colors.green : Colors.red,
+                            fontSize: 11,
+                          ),
+                        ),
+                      ],
+                    ),
                     SizedBox(height: 8),
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,

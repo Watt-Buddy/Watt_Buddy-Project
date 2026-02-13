@@ -7,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:http/http.dart' as http;
 
 import '../utils/responsive_scaffold.dart';
+import '../services/api_service.dart';
 
 class DashboardScreen extends StatefulWidget {
   const DashboardScreen({super.key});
@@ -60,9 +61,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
   // ---------------- LOAD ESP32 DATA ----------------
   Future<void> _loadEsp32Data() async {
     try {
-      final response = await http.get(
-        Uri.parse('http://192.168.6.214:4000/esp32/latest'),
-      );
+      final host = ApiService.baseUrl.replaceFirst('/api', '');
+      final response = await http
+          .get(
+            Uri.parse('$host/esp32/latest'),
+          )
+          .timeout(ApiService.connectionTimeout);
 
       if (response.statusCode == 200 && response.body.isNotEmpty) {
         final responseData = jsonDecode(response.body);

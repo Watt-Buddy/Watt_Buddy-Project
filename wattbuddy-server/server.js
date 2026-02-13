@@ -22,7 +22,7 @@ let esp32LatestData = {
   energy: 0,
   relay1: 0, 
   relay2: 0, 
-  timestamp: new Date()
+  timestamp: new Date().toISOString()
 };
 
 // Track last database write to optimize database growth
@@ -62,46 +62,149 @@ app.get('/', (req, res) => {
 // ============ 2️⃣ ESP32 DATA RECEIVER (MODIFIED TO SAVE TO DB) ============
 app.post('/api/esp32/data', async (req, res) => {
   try {
-    const { voltage, current, power, energy, relay1, relay2, userId } = req.body;
+    // Accept either `energy` or `energy_consumed` from different firmware versions
+    const { voltage, current, power, energy, energy_consumed, relay1, relay2, userId, dominantRelay, dominantPower } = req.body;
     const pool = require('./db'); // Ensure your DB connection is imported
     const now = Date.now();
 
-    // 1. Update Cache (Always for real-time Socket.io)
-    esp32LatestData = {
-      voltage: voltage || 0,
-      current: current || 0,
-      power: power || 0,
-      energy_consumed: energy || 0, // Using the name from your DB
-      relay1: relay1 || 0,
-      relay2: relay2 || 0,
+    // DEBUG: Log raw incoming data
+    console.log(`📥 [ESP32 POST RECEIVED] Raw body:`, JSON.stringify(req.body));
+
+    // Normalize and parse incoming values (use whichever energy key is present)
+    const parsedVoltage = parseFloat(voltage) || 0;
+    const parsedCurrent = parseFloat(current) || 0;
+    const parsedPower = parseFloat(power) || 0;
+    const parsedEnergy = parseFloat(energy !== undefined ? energy : energy_consumed) || 0;
+    const parsedRelay1 = parseInt(relay1) || 0;
+    const parsedRelay2 = parseInt(relay2) || 0;
+    const parsedDominantRelay = parseInt(dominantRelay) || 0;
+    const parsedDominantPower = parseFloat(dominantPower) || 0;
+
+    // DEBUG: Log parsed values
+    console.log(`✅ [PARSED VALUES] V=${parsedVoltage}, I=${parsedCurrent}, P=${parsedPower}, E=${parsedEnergy}, R1=${parsedRelay1}, R2=${parsedRelay2}`);
+
+    // 1. Update Cache (Always for real-time Socket.io) with parsed numeric values
+    // Use in-place update so other modules holding a reference see changes
+    Object.assign(esp32LatestData, {
+      voltage: parsedVoltage,
+      current: parsedCurrent,
+      power: parsedPower,
+      energy: parsedEnergy,
+      relay1: parsedRelay1,
+      relay2: parsedRelay2,
+      dominantRelay: parsedDominantRelay,
+      dominantPower: parsedDominantPower,
       timestamp: new Date().toISOString()
-    };
+    });
+
+    // DEBUG: Log what was stored in cache
+    console.log(`💾 [CACHE UPDATED]`, JSON.stringify(esp32LatestData));
     
     // 3. Broadcast to Flutter (Every 5 seconds for live dashboard)
     io.emit('live_data_update', esp32LatestData);
+    
+    // ============ ANOMALY DETECTION & REAL-TIME ALERT ============
+    // Detect power spikes > 2x baseline (baseline = 75W, threshold = 150W)
+    const baselineAvgPower = 75; // Conservative baseline
+    const anomalyThreshold = baselineAvgPower * 2.0; // 150W
+    const currentPower = parsedPower;
+    
+    if (currentPower > anomalyThreshold) {
+      // Identify which socket is causing the spike
+      let problematicSocket = "Both Sockets";
+      let dominantInfo = '';
+
+      if (parsedDominantRelay === 1 || parsedDominantRelay === 2) {
+        problematicSocket = parsedDominantRelay === 1 ? "Socket 1" : "Socket 2";
+        if (parsedDominantPower > 0) {
+          dominantInfo = ` (~${parsedDominantPower.toFixed(0)}W from this device)`;
+        }
+      } else {
+        // Fallback: infer from relay states if diagnosis not available
+        if (relay1 === 1 && relay2 === 0) {
+          problematicSocket = "Socket 1";
+        } else if (relay2 === 1 && relay1 === 0) {
+          problematicSocket = "Socket 2";
+        }
+      }
+      
+      // Emit real-time alert to Flutter app via WebSocket
+      io.emit('anomaly_alert', {
+        isAbnormal: true,
+        anomalySocket: problematicSocket,
+        currentPower: currentPower,
+        threshold: anomalyThreshold,
+        dominantRelay: parsedDominantRelay,
+        dominantPower: parsedDominantPower,
+        message: `⚠️ High usage detected on ${problematicSocket}! Power: ${currentPower.toFixed(0)}W${dominantInfo}`,
+        timestamp: new Date().toISOString(),
+        userId: userId || '8'
+      });
+      
+      console.log(`🚨 [ANOMALY ALERT] ${problematicSocket} - Power: ${currentPower}W (Threshold: ${anomalyThreshold}W, DominantRelay=${parsedDominantRelay}, DominantPower=${parsedDominantPower}W)`);
+    }
     
     // 2. SAVE TO DATABASE (Optimized: Only write if conditions met)
     // Condition 1: 1 minute (60000ms) has passed since last write
     // Condition 2: Energy changed by at least 0.001 kWh
     const timeSinceLastWrite = now - lastDbWrite.timestamp;
-    const energyDifference = Math.abs((energy || 0) - lastDbWrite.energy_consumed);
+    const energyDifference = Math.abs(parsedEnergy - (parseFloat(lastDbWrite.energy_consumed) || 0));
     const shouldWrite = timeSinceLastWrite >= 60000 || energyDifference >= 0.001;
     
     if (shouldWrite) {
-      const query = `
+      // Compute increment since last saved energy (only positive deltas)
+      const incomingEnergy = parsedEnergy;
+      const lastEnergy = parseFloat(lastDbWrite.energy_consumed) || incomingEnergy;
+      const increment = incomingEnergy > lastEnergy ? (incomingEnergy - lastEnergy) : 0;
+
+      const insertQuery = `
         INSERT INTO "EnergyReadings" (user_id, voltage, current, power, energy_consumed, relay1, relay2, timestamp)
         VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
       `;
-      await pool.query(query, [userId || '8', voltage, current, power, energy, relay1, relay2]);
-      
+      await pool.query(insertQuery, [userId || '8', parsedVoltage, parsedCurrent, parsedPower, incomingEnergy, parsedRelay1, parsedRelay2]);
+
+      // Update aggregate total in UserStats to protect against energy resets
+      try {
+        const updateQuery = `
+          UPDATE "UserStats"
+          SET total_energy = total_energy + $1
+          WHERE user_id = $2
+        `;
+        const updateRes = await pool.query(updateQuery, [increment, userId || '8']);
+
+        // If no row was updated, insert a new stats row
+        if (updateRes.rowCount === 0 && increment > 0) {
+          const insertStats = `
+            INSERT INTO "UserStats" (user_id, total_energy, created_at)
+            VALUES ($1, $2, NOW())
+          `;
+          await pool.query(insertStats, [userId || '8', increment]);
+        }
+      } catch (errStats) {
+        console.error('❌ Failed to update UserStats:', errStats);
+      }
+
       // Update tracking variables
       lastDbWrite.timestamp = now;
-      lastDbWrite.energy_consumed = energy || 0;
-      
-      console.log(`📊 [ESP32 DB Save] V: ${voltage}V | I: ${current}A | P: ${power}W | E: ${energy}kWh | User: ${userId || '8'}`);
+      lastDbWrite.energy_consumed = incomingEnergy;
+
+      // ALSO: write a normalized row into the legacy `energy_readings` table
+      // so services expecting `energy_readings` (power_consumption, recorded_at) work.
+      try {
+        const uid = parseInt(userId) || 8;
+        await pool.query(
+          `INSERT INTO energy_readings (user_id, power_consumption, voltage, current, recorded_at)
+           VALUES ($1, $2, $3, $4, NOW())`,
+          [uid, parsedPower, parsedVoltage, parsedCurrent]
+        );
+        console.log('💾 [ALT DB SAVE] energy_readings row inserted');
+      } catch (errAlt) {
+        console.error('❌ Failed to insert into energy_readings fallback:', errAlt.message || errAlt);
+      }
+      console.log(`📊 [ESP32 DB Save] V: ${parsedVoltage}V | I: ${parsedCurrent}A | P: ${parsedPower}W | E: ${incomingEnergy}kWh | inc: ${increment.toFixed(6)} | User: ${userId || '8'}`);
     } else {
       // Log cache-only updates
-      console.log(`📡 [ESP32 Live] V: ${voltage}V | I: ${current}A | P: ${power}W | E: ${energy}kWh (Cache only)`);
+      console.log(`📡 [ESP32 Live] V: ${parsedVoltage}V | I: ${parsedCurrent}A | P: ${parsedPower}W | E: ${parsedEnergy}kWh (Cache only)`);
     }
     
     res.json({ success: true, data: esp32LatestData, dbWrite: shouldWrite });
@@ -253,12 +356,160 @@ app.get('/api/graph/live/:userId', async (req, res) => {
   }
 });
 
+// ============ DEBUG: recent energy rows (no psql needed) ============
+app.get('/api/debug/recent-energy', async (req, res) => {
+  try {
+    const pool = require('./db');
+    const limit = parseInt(req.query.limit) || 20;
+
+    // Prefer canonical snake_case table used by graph service
+    try {
+      const result = await pool.query(
+        `SELECT recorded_at as timestamp, power_consumption as power, voltage, current
+         FROM energy_readings
+         ORDER BY recorded_at DESC
+         LIMIT $1`,
+        [limit]
+      );
+
+      return res.json({ success: true, source: 'energy_readings', rows: result.rows });
+    } catch (e) {
+      // Fallback to older "EnergyReadings" table
+      const fallback = await pool.query(
+        `SELECT timestamp as timestamp, power as power, voltage, current
+         FROM "EnergyReadings"
+         ORDER BY timestamp DESC
+         LIMIT $1`,
+        [limit]
+      );
+      return res.json({ success: true, source: 'EnergyReadings', rows: fallback.rows });
+    }
+  } catch (err) {
+    console.error('❌ Debug recent-energy failed:', err);
+    res.status(500).json({ success: false, error: err.message || err });
+  }
+});
+
 // ============ ML PREDICTION ENDPOINTS ============
 app.get('/api/ml-predict/next-hour/:userId', async (req, res) => {
   try {
     const { userId } = req.params;
     const prediction = await MLPredictionService.predictNextHour(userId);
     res.json({ success: true, prediction });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ============ RELAY CONTROL ENDPOINTS ============
+// Turn off Socket 1 relay
+app.get('/api/relay/relay1/off', async (req, res) => {
+  try {
+    console.log('🔴 [RELAY 1 OFF] User triggered shutdown');
+    
+    // Emit relay status update to all connected clients
+    io.emit('relay_status', {
+      relay: 1,
+      status: 'off',
+      message: 'Socket 1 has been safely disconnected',
+      timestamp: new Date().toISOString()
+    });
+    
+    // In production, send HTTP command to ESP32 at http://192.168.6.203/relay1/off
+    // For now, we're logging and broadcasting
+    
+    res.json({ 
+      success: true, 
+      message: 'Socket 1 relay turned OFF',
+      relay: 1,
+      status: 'off'
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Turn off Socket 2 relay
+app.get('/api/relay/relay2/off', async (req, res) => {
+  try {
+    console.log('🔴 [RELAY 2 OFF] User triggered shutdown');
+    
+    // Emit relay status update to all connected clients
+    io.emit('relay_status', {
+      relay: 2,
+      status: 'off',
+      message: 'Socket 2 has been safely disconnected',
+      timestamp: new Date().toISOString()
+    });
+    
+    // In production, send HTTP command to ESP32 at http://192.168.6.203/relay2/off
+    
+    res.json({ 
+      success: true, 
+      message: 'Socket 2 relay turned OFF',
+      relay: 2,
+      status: 'off'
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Turn on Socket 1 relay
+app.get('/api/relay/relay1/on', async (req, res) => {
+  try {
+    console.log('🟢 [RELAY 1 ON] User enabled socket');
+    
+    io.emit('relay_status', {
+      relay: 1,
+      status: 'on',
+      message: 'Socket 1 has been re-enabled',
+      timestamp: new Date().toISOString()
+    });
+    
+    res.json({ 
+      success: true, 
+      message: 'Socket 1 relay turned ON',
+      relay: 1,
+      status: 'on'
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Turn on Socket 2 relay
+app.get('/api/relay/relay2/on', async (req, res) => {
+  try {
+    console.log('🟢 [RELAY 2 ON] User enabled socket');
+    
+    io.emit('relay_status', {
+      relay: 2,
+      status: 'on',
+      message: 'Socket 2 has been re-enabled',
+      timestamp: new Date().toISOString()
+    });
+    
+    res.json({ 
+      success: true, 
+      message: 'Socket 2 relay turned ON',
+      relay: 2,
+      status: 'on'
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get current relay status
+app.get('/api/relay/status', (req, res) => {
+  try {
+    res.json({
+      success: true,
+      relay1: esp32LatestData.relay1,
+      relay2: esp32LatestData.relay2,
+      timestamp: esp32LatestData.timestamp
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -287,6 +538,28 @@ cron.schedule('0 0 1 * *', async () => {
         console.error('❌ Monthly reset failed:', err);
     }
 });
+
+// Ensure supporting tables exist (safe to run every start)
+try {
+  const pool = require('./db');
+  (async () => {
+    try {
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS "UserStats" (
+          user_id TEXT PRIMARY KEY,
+          total_energy NUMERIC DEFAULT 0,
+          created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+          updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+        );
+      `);
+      console.log('✅ Ensured table "UserStats" exists');
+    } catch (e) {
+      console.error('❌ Error ensuring UserStats table exists:', e);
+    }
+  })();
+} catch (e) {
+  console.error('❌ Could not initialize DB helper for migrations:', e);
+}
 
 // ============ START SERVER ============
 const PORT = process.env.PORT || 4000;

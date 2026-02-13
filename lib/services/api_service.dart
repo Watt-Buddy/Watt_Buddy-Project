@@ -13,8 +13,8 @@ class ApiService {
     }
 
     if (Platform.isAndroid) {
-      // REAL ANDROID PHONE on OPPO F15 hotspot
-      return 'http://192.168.6.214:4000/api';
+      // REAL ANDROID PHONE on OPPO F15 hotspot - CORRECTED IP
+      return 'http://10.40.59.214:4000/api';
     }
 
     // Windows / macOS / Linux
@@ -207,10 +207,12 @@ class ApiService {
   static Future<Map<String, dynamic>> getRelayStatus() async {
     try {
       debugPrint('📤 Getting relay status from backend cache');
-      // Point to the backend's ESP32 cache endpoint instead of /api/relay/all
+      // Use same host as `baseUrl` but target the non-/api cache endpoint
+      final host = baseUrl.replaceFirst('/api', '');
+      final url = Uri.parse('$host/esp32/latest');
       final response = await http
           .get(
-            Uri.parse('http://localhost:4000/esp32/latest'),
+            url,
             headers: {'Content-Type': 'application/json'},
           )
           .timeout(connectionTimeout);
@@ -265,8 +267,8 @@ class ApiService {
         try {
           debugPrint('📤 Sending ESP32 data to backend...');
           final backendResponse = await http
-              .post(
-                Uri.parse('http://localhost:4000/api/esp32/data'),
+                  .post(
+                    Uri.parse('$baseUrl/esp32/data'),
                 headers: {'Content-Type': 'application/json'},
                 body: jsonEncode(sensorData),
               )
@@ -301,10 +303,10 @@ class ApiService {
     try {
       debugPrint('🔌 Turning ESP32 Relay 1 ON...');
       const List<String> urls = [
-        'http://192.168.6.203:80/api/relay1/on',     // Primary
-        'http://192.168.198.203:80/api/relay1/on',   // Secondary fallback
-        'http://192.168.1.100:80/api/relay1/on',
-        'http://wattbuddy.local:80/api/relay1/on',
+        'http://10.40.59.203:80/relay1/on',     // Primary (matches current ESP32 IP)
+        'http://192.168.198.203:80/relay1/on',  // Secondary fallback
+        'http://192.168.1.100:80/relay1/on',
+        'http://wattbuddy.local:80/relay1/on',
       ];
       
       for (final url in urls) {
@@ -314,11 +316,8 @@ class ApiService {
               .timeout(const Duration(seconds: 5));
 
           if (response.statusCode == 200) {
-            final data = jsonDecode(response.body);
-            if (data['success'] == true) {
-              debugPrint('✅ Relay 1 turned ON');
-              return true;
-            }
+            debugPrint('✅ Relay 1 turned ON (ESP32 responded 200)');
+            return true;
           }
         } catch (e) {
           debugPrint('⚠️ URL $url failed: $e');
@@ -337,10 +336,10 @@ class ApiService {
     try {
       debugPrint('🔌 Turning ESP32 Relay 1 OFF...');
       const List<String> urls = [
-        'http://192.168.6.203:80/api/relay1/off',    // Primary
-        'http://192.168.198.203:80/api/relay1/off',  // Secondary fallback
-        'http://192.168.1.100:80/api/relay1/off',
-        'http://wattbuddy.local:80/api/relay1/off',
+        'http://10.40.59.203:80/relay1/off',    // Primary (matches current ESP32 IP)
+        'http://192.168.198.203:80/relay1/off', // Secondary fallback
+        'http://192.168.1.100:80/relay1/off',
+        'http://wattbuddy.local:80/relay1/off',
       ];
       
       for (final url in urls) {
@@ -350,11 +349,8 @@ class ApiService {
               .timeout(const Duration(seconds: 5));
 
           if (response.statusCode == 200) {
-            final data = jsonDecode(response.body);
-            if (data['success'] == true) {
-              debugPrint('✅ Relay 1 turned OFF');
-              return true;
-            }
+            debugPrint('✅ Relay 1 turned OFF (ESP32 responded 200)');
+            return true;
           }
         } catch (e) {
           debugPrint('⚠️ URL $url failed: $e');
@@ -373,10 +369,10 @@ class ApiService {
     try {
       debugPrint('🔌 Turning ESP32 Relay 2 ON...');
       const List<String> urls = [
-        'http://192.168.6.203:80/api/relay2/on',     // Primary
-        'http://192.168.198.203:80/api/relay2/on',   // Secondary fallback
-        'http://192.168.1.100:80/api/relay2/on',
-        'http://wattbuddy.local:80/api/relay2/on',
+        'http://10.40.59.203:80/relay2/on',     // Primary (matches current ESP32 IP)
+        'http://192.168.198.203:80/relay2/on',  // Secondary fallback
+        'http://192.168.1.100:80/relay2/on',
+        'http://wattbuddy.local:80/relay2/on',
       ];
       
       for (final url in urls) {
@@ -386,11 +382,8 @@ class ApiService {
               .timeout(const Duration(seconds: 5));
 
           if (response.statusCode == 200) {
-            final data = jsonDecode(response.body);
-            if (data['success'] == true) {
-              debugPrint('✅ Relay 2 turned ON');
-              return true;
-            }
+            debugPrint('✅ Relay 2 turned ON (ESP32 responded 200)');
+            return true;
           }
         } catch (e) {
           debugPrint('⚠️ URL $url failed: $e');
@@ -409,10 +402,10 @@ class ApiService {
     try {
       debugPrint('🔌 Turning ESP32 Relay 2 OFF...');
       const List<String> urls = [
-        'http://192.168.6.203:80/api/relay2/off',    // Primary
-        'http://192.168.198.203:80/api/relay2/off',  // Secondary fallback
-        'http://192.168.1.100:80/api/relay2/off',
-        'http://wattbuddy.local:80/api/relay2/off',
+        'http://10.40.59.203:80/relay2/off',    // Primary (matches current ESP32 IP)
+        'http://192.168.198.203:80/relay2/off', // Secondary fallback
+        'http://192.168.1.100:80/relay2/off',
+        'http://wattbuddy.local:80/relay2/off',
       ];
       
       for (final url in urls) {
@@ -422,11 +415,8 @@ class ApiService {
               .timeout(const Duration(seconds: 5));
 
           if (response.statusCode == 200) {
-            final data = jsonDecode(response.body);
-            if (data['success'] == true) {
-              debugPrint('✅ Relay 2 turned OFF');
-              return true;
-            }
+            debugPrint('✅ Relay 2 turned OFF (ESP32 responded 200)');
+            return true;
           }
         } catch (e) {
           debugPrint('⚠️ URL $url failed: $e');
@@ -522,10 +512,12 @@ class ApiService {
   static Future<bool> setESP32User(String userId) async {
     try {
       debugPrint('👤 Setting ESP32 user: $userId');
-      final String esp32Url = 'http://10.168.130.214:80/user/set?userId=$userId';
+      // Match current ESP32 static IP and firmware route (/set-user?id=...)
+      const String esp32Ip = '10.40.59.203';
+      final String esp32Url = 'http://$esp32Ip:80/set-user?id=$userId';
       
       final response = await http
-          .post(
+          .get(
             Uri.parse(esp32Url),
             headers: {'Content-Type': 'application/json'},
           )

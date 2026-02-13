@@ -121,15 +121,11 @@ class _LoginRegisterScreenState extends State<LoginRegisterScreen> {
   // Logic to tell ESP32 which user is active
   Future<void> provisionHardware(String userId) async {
     try {
-      // Your ESP32 local IP from the C++ code
-      final String espUrl = 'http://192.168.6.203/set-user?id=$userId';
-      
-      final response = await http.get(Uri.parse(espUrl)).timeout(
-        const Duration(seconds: 5),
-      );
-
-      if (response.statusCode == 200) {
+      final ok = await ApiService.setESP32User(userId);
+      if (ok) {
         debugPrint('✅ Hardware provisioned for User $userId');
+      } else {
+        debugPrint('⚠️ ESP32 did not confirm user provisioning');
       }
     } catch (e) {
       // If user is not on the same WiFi as the ESP32, this will fail gracefully

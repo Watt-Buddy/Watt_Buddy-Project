@@ -5,6 +5,7 @@ import 'dart:async';
 import 'package:http/http.dart' as http;
 import 'package:fl_chart/fl_chart.dart';
 import '../utils/responsive_scaffold.dart';
+import '../services/api_service.dart';
 
 class BillPredictionScreen extends StatefulWidget {
   const BillPredictionScreen({super.key});
@@ -28,8 +29,8 @@ class _BillPredictionScreenState extends State<BillPredictionScreen> {
   String _riskLevel = 'Normal';
   Color _riskColor = Colors.green;
 
-  // History for Bar Chart
-  List<BarChartGroupData> _barGroups = [];
+  // History for Line Chart
+  List<FlSpot> _lineDataPoints = [];
 
   @override
   void initState() {
@@ -57,8 +58,8 @@ class _BillPredictionScreenState extends State<BillPredictionScreen> {
     try {
       // 1. Fetch Billing Data from SQL View (More accurate server-side calculation)
       final billResponse = await http.get(
-        Uri.parse('http://192.168.6.214:4000/api/billing/current/$_userId'),
-      );
+        Uri.parse('${ApiService.baseUrl}/billing/current/$_userId'),
+      ).timeout(ApiService.connectionTimeout);
 
       if (billResponse.statusCode == 200) {
         final billData = jsonDecode(billResponse.body);
@@ -90,8 +91,8 @@ class _BillPredictionScreenState extends State<BillPredictionScreen> {
       // 3. Check usage summary for anomaly demo (strong spike detection)
       try {
         final summaryResp = await http.get(
-          Uri.parse('http://192.168.6.214:4000/api/usage/summary/$_userId'),
-        );
+          Uri.parse('${ApiService.baseUrl}/usage/summary/$_userId'),
+        ).timeout(ApiService.connectionTimeout);
 
         if (summaryResp.statusCode == 200) {
           final summary = jsonDecode(summaryResp.body);
@@ -125,8 +126,8 @@ class _BillPredictionScreenState extends State<BillPredictionScreen> {
     
     try {
       final response = await http.get(
-        Uri.parse('http://192.168.6.214:4000/api/usage/summary/$_userId'),
-      );
+        Uri.parse('${ApiService.baseUrl}/usage/summary/$_userId'),
+      ).timeout(ApiService.connectionTimeout);
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
@@ -270,9 +271,10 @@ class _BillPredictionScreenState extends State<BillPredictionScreen> {
       } else if (socketName == "Socket 2") {
         endpoint = '/api/relay/relay2/off';
       } else if (socketName == "Both Sockets") {
-        // Turn off both relays
-        await http.post(Uri.parse('http://192.168.6.214:4000/api/relay/relay1/off'));
-        await http.post(Uri.parse('http://192.168.6.214:4000/api/relay/relay2/off'));
+        // Turn off both relays via backend
+        final host = ApiService.baseUrl.replaceFirst('/api', '');
+        await http.post(Uri.parse('$host/api/relay/relay1/off')).timeout(ApiService.connectionTimeout);
+        await http.post(Uri.parse('$host/api/relay/relay2/off')).timeout(ApiService.connectionTimeout);
         
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
@@ -287,9 +289,10 @@ class _BillPredictionScreenState extends State<BillPredictionScreen> {
         return; // Unknown socket
       }
 
+      final host = ApiService.baseUrl.replaceFirst('/api', '');
       final response = await http.post(
-        Uri.parse('http://192.168.6.214:4000$endpoint'),
-      );
+        Uri.parse('$host$endpoint'),
+      ).timeout(ApiService.connectionTimeout);
 
       if (response.statusCode == 200) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -317,32 +320,22 @@ class _BillPredictionScreenState extends State<BillPredictionScreen> {
     if (_userId == null) return;
     try {
       final response = await http.get(
-        Uri.parse('http://192.168.6.214:4000/api/usage/daily-history/$_userId'),
-      );
+        Uri.parse('${ApiService.baseUrl}/usage/daily-history/$_userId'),
+      ).timeout(ApiService.connectionTimeout);
 
       if (response.statusCode == 200) {
         final List<dynamic> history = jsonDecode(response.body);
-        List<BarChartGroupData> groups = [];
+        List<FlSpot> spots = [];
 
         for (var entry in history) {
-          groups.add(
-            BarChartGroupData(
-              x: entry['day'],
-              barRods: [
-                BarChartRodData(
-                  toY: (entry['kwh'] ?? 0.0).toDouble(),
-                  color: Colors.cyanAccent,
-                  width: 12,
-                  borderRadius: BorderRadius.circular(4),
-                )
-              ],
-            ),
-          );
+          final day = (entry['day'] ?? 0).toDouble();
+          final kwh = (entry['kwh'] ?? 0.0).toDouble();
+          spots.add(FlSpot(day, kwh));
         }
-        setState(() => _barGroups = groups);
+        setState(() => _lineDataPoints = spots);
       }
     } catch (e) {
-      debugPrint("Bar chart fetch error: $e");
+      debugPrint("Line chart fetch error: $e");
     }
   }
 
@@ -369,7 +362,7 @@ class _BillPredictionScreenState extends State<BillPredictionScreen> {
                 const Text('📊 Daily Consumption History (kWh)', 
                   style: TextStyle(color: Colors.white70, fontWeight: FontWeight.bold)),
                 const SizedBox(height: 15),
-                _buildUsageBarChart(),
+                _buildUsageLineChart(),
                 const SizedBox(height: 30),
                 _buildAnomalyStatusCard(),
                 const SizedBox(height: 20),
@@ -429,7 +422,7 @@ class _BillPredictionScreenState extends State<BillPredictionScreen> {
     );
   }
 
-  Widget _buildUsageBarChart() {
+  Widget _buildUsageLineChart() {
     return Container(
       height: 250,
       padding: const EdgeInsets.all(15),
@@ -438,47 +431,87 @@ class _BillPredictionScreenState extends State<BillPredictionScreen> {
         borderRadius: BorderRadius.circular(15),
         border: Border.all(color: Colors.white10),
       ),
-      child: _barGroups.isEmpty 
+      child: _lineDataPoints.isEmpty 
         ? const Center(child: Text("Loading history data...", style: TextStyle(color: Colors.white54)))
-        : BarChart(
-            BarChartData(
-              barGroups: _barGroups,
-              borderData: FlBorderData(show: false),
-              gridData: const FlGridData(show: false),
+        : LineChart(
+            LineChartData(
+              minY: 0,
+              maxY: _lineDataPoints.isEmpty ? 10 : (_lineDataPoints.map((s) => s.y).reduce((a, b) => a > b ? a : b) * 1.2),
+              gridData: FlGridData(
+                show: true,
+                drawVerticalLine: false,
+                horizontalInterval: _lineDataPoints.isEmpty ? 5 : null,
+                getDrawingHorizontalLine: (value) => FlLine(
+                  color: Colors.white.withOpacity(0.1),
+                  strokeWidth: 1,
+                ),
+              ),
               titlesData: FlTitlesData(
                 leftTitles: AxisTitles(
                   sideTitles: SideTitles(
                     showTitles: true, 
-                    reservedSize: 30, 
-                    getTitlesWidget: (value, _) => Text(
-                      "${value.toInt()}", 
-                      style: const TextStyle(color: Colors.white54, fontSize: 10)
-                    )
+                    reservedSize: 40,
+                    interval: _lineDataPoints.isEmpty ? 5 : null,
+                    getTitlesWidget: (value, meta) {
+                      if (value % 5 != 0 && _lineDataPoints.isNotEmpty) return const SizedBox.shrink();
+                      return Text(
+                        value.toInt().toString(), 
+                        style: const TextStyle(color: Colors.white54, fontSize: 10)
+                      );
+                    }
                   )
                 ),
                 bottomTitles: AxisTitles(
                   sideTitles: SideTitles(
                     showTitles: true,
-                    getTitlesWidget: (value, _) => Text(
-                      "D${value.toInt()}", 
-                      style: const TextStyle(color: Colors.white54, fontSize: 10)
-                    )
+                    reservedSize: 30,
+                    getTitlesWidget: (value, meta) {
+                      // Show day number (1, 2, 3...) instead of "D1", "D2"
+                      if (value.toInt() % 5 != 0 && _lineDataPoints.length > 10) return const SizedBox.shrink();
+                      return Text(
+                        value.toInt().toString(), 
+                        style: const TextStyle(color: Colors.white54, fontSize: 10)
+                      );
+                    }
                   )
                 ),
                 rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
                 topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
               ),
-              barTouchData: BarTouchData(
+              borderData: FlBorderData(show: false),
+              lineTouchData: LineTouchData(
                 enabled: true,
-                touchTooltipData: BarTouchTooltipData(
-                  getTooltipItem: (group, groupIndex, rod, rodIndex) {
-                    return BarTooltipItem(
-                      '${rod.toY.toStringAsFixed(2)} kWh',
-                      const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-                    );
+                touchTooltipData: LineTouchTooltipData(
+                  getTooltipItems: (spots) {
+                    return spots.map((spot) {
+                      return LineTooltipItem(
+                        'Day ${spot.x.toInt()}: ${spot.y.toStringAsFixed(2)} kWh',
+                        const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                      );
+                    }).toList();
                   },
                 ),
               ),
+              lineBarsData: [
+                LineChartBarData(
+                  spots: _lineDataPoints,
+                  isCurved: true,
+                  color: Colors.cyanAccent,
+                  barWidth: 3,
+                  dotData: const FlDotData(show: false),
+                  belowBarData: BarAreaData(
+                    show: true,
+                    gradient: LinearGradient(
+                      begin: Alignment.topCenter,
+                      end: Alignment.bottomCenter,
+                      colors: [
+                        Colors.cyanAccent.withOpacity(0.3),
+                        Colors.cyanAccent.withOpacity(0.05),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
             ),
           ),
     );
