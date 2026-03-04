@@ -56,7 +56,7 @@ class AnomalyNotificationService {
     required String anomalyType,
   }) async {
     int notificationId = anomalyAlertId;
-    
+
     // Use specific ID based on anomaly type
     if (anomalyType.contains('Overvoltage')) {
       notificationId = overvoltageAlertId;
@@ -79,8 +79,7 @@ class AnomalyNotificationService {
       fullScreenIntent: true,
     );
 
-    const DarwinNotificationDetails iOSDetails =
-        DarwinNotificationDetails(
+    const DarwinNotificationDetails iOSDetails = DarwinNotificationDetails(
       presentAlert: true,
       presentBadge: true,
       presentSound: true,
@@ -128,8 +127,7 @@ class AnomalyNotificationService {
       playSound: true,
     );
 
-    const DarwinNotificationDetails iOSDetails =
-        DarwinNotificationDetails(
+    const DarwinNotificationDetails iOSDetails = DarwinNotificationDetails(
       presentAlert: true,
       presentBadge: true,
       presentSound: true,
@@ -162,8 +160,9 @@ class AnomalyNotificationService {
     required int anomalyCount,
   }) async {
     String title = '📊 Daily Energy Summary';
-    String body = 'Energy: $dailyEnergy | Peak: $peakPower | Avg: $averagePower';
-    
+    String body =
+        'Energy: $dailyEnergy | Peak: $peakPower | Avg: $averagePower';
+
     if (anomalyCount > 0) {
       title = '⚠️ Daily Summary with Anomalies';
       body = '$body\n$anomalyCount anomalies detected';

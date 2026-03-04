@@ -42,27 +42,45 @@ class RealtimeAnomalyService {
 
       // 🚨 Listen for Anomaly Alerts
       _socket!.on('anomaly_alert', (data) async {
-        debugPrint('🚨 Anomaly Alert Received: $data');
-        
-        await _handleAnomalyAlert(data as Map<String, dynamic>);
-        
-        if (_onAnomalyAlert != null) {
-          _onAnomalyAlert!(data);
+        try {
+          debugPrint('🚨 Anomaly Alert Received: $data');
+          if (data is! Map) return;
+
+          final payload = Map<String, dynamic>.from(data);
+          await _handleAnomalyAlert(payload);
+
+          if (_onAnomalyAlert != null) {
+            _onAnomalyAlert!(payload);
+          }
+        } catch (e) {
+          debugPrint('❌ Failed to handle anomaly_alert payload: $e');
         }
       });
 
       // 🔌 Listen for Relay Status Updates
       _socket!.on('relay_status', (data) {
-        debugPrint('🔌 Relay Status Update: $data');
-        
-        if (_onRelayStatusChanged != null) {
-          _onRelayStatusChanged!(data);
+        try {
+          debugPrint('🔌 Relay Status Update: $data');
+          if (data is! Map) return;
+          final payload = Map<String, dynamic>.from(data);
+
+          if (_onRelayStatusChanged != null) {
+            _onRelayStatusChanged!(payload);
+          }
+        } catch (e) {
+          debugPrint('❌ Failed to handle relay_status payload: $e');
         }
       });
 
       // 📡 Listen for Live Data Updates
       _socket!.on('live_data_update', (data) {
-        debugPrint('📡 Live Data Update: Power=${data['power']}W');
+        try {
+          if (data is! Map) return;
+          final payload = Map<String, dynamic>.from(data);
+          debugPrint('📡 Live Data Update: Power=${payload['power']}W');
+        } catch (e) {
+          debugPrint('❌ Failed to handle live_data_update payload: $e');
+        }
       });
 
       _socket!.onDisconnect((_) {

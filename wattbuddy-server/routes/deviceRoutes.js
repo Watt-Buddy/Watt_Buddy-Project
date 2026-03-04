@@ -145,13 +145,13 @@ router.post('/relay/toggle', async (req, res) => {
     // Update database
     const updated = await DeviceConfigService.toggleRelay(userId, parseInt(relayNumber));
 
-    // Send command to ESP32
-    const esp32URL = newState 
-      ? `http://wattbuddy.local/api/relay${relayNumber}/on`
-      : `http://wattbuddy.local/api/relay${relayNumber}/off`;
+    // Send command to ESP32 (direct IP, firmware endpoints are /relay1/on etc)
+    const esp32URL = newState
+      ? `http://10.185.178.50/relay${relayNumber}/on`
+      : `http://10.185.178.50/relay${relayNumber}/off`;
     
     try {
-      const esp32Response = await axios.post(esp32URL, {}, { timeout: 3000 });
+      const esp32Response = await axios.get(esp32URL, { timeout: 3000 });
       console.log(`✅ Relay ${relayNumber} command sent to ESP32:`, esp32Response.data);
     } catch (esp32Error) {
       console.error(`⚠️  ESP32 relay control failed: ${esp32Error.message}`);

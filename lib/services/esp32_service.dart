@@ -2,7 +2,8 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 class Esp32Service {
-  static const String baseUrl = 'http://192.168.233.214:4000';
+  // Match backend PC IP from ipconfig (IPv4 Address: 10.148.3.49)
+  static const String baseUrl = 'http://10.148.3.49:4000';
 
   static Future<Map<String, dynamic>?> fetchLatestData() async {
     try {

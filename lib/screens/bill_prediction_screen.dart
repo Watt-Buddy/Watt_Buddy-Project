@@ -17,6 +17,7 @@ class BillPredictionScreen extends StatefulWidget {
 class _BillPredictionScreenState extends State<BillPredictionScreen> {
   String? _userId;
   bool _isLoading = true;
+  String? _errorMessage;
 
   // Monthly Analytics Data
   double _currentMonthUsage = 0.0;
@@ -44,10 +45,38 @@ class _BillPredictionScreenState extends State<BillPredictionScreen> {
   Future<void> _loadUserAndFetchData() async {
     final prefs = await SharedPreferences.getInstance();
     final userJson = prefs.getString('wattBuddyUser');
-    if (userJson != null) {
+    if (userJson == null) {
+      setState(() {
+        _userId = null;
+        _isLoading = false;
+        _errorMessage = 'Please log in to view bill prediction.';
+      });
+      return;
+    }
+
+    try {
       final user = jsonDecode(userJson);
-      setState(() => _userId = user['id'].toString());
-      _fetchBillPredictionData();
+      final dynamic id = user['id'];
+      if (id == null) {
+        setState(() {
+          _userId = null;
+          _isLoading = false;
+          _errorMessage = 'User id missing. Please log in again.';
+        });
+        return;
+      }
+
+      setState(() {
+        _userId = id.toString();
+        _errorMessage = null;
+      });
+      await _fetchBillPredictionData();
+    } catch (e) {
+      setState(() {
+        _userId = null;
+        _isLoading = false;
+        _errorMessage = 'Could not read user session. Please log in again.';
+      });
     }
   }
 
@@ -56,6 +85,7 @@ class _BillPredictionScreenState extends State<BillPredictionScreen> {
     setState(() => _isLoading = true);
 
     try {
+      setState(() => _errorMessage = null);
       // 1. Fetch Billing Data from SQL View (More accurate server-side calculation)
       final billResponse = await http.get(
         Uri.parse('${ApiService.baseUrl}/billing/current/$_userId'),
@@ -78,6 +108,11 @@ class _BillPredictionScreenState extends State<BillPredictionScreen> {
             _riskColor = Colors.green;
           });
           debugPrint('✅ Billing data loaded: Usage=${_currentMonthUsage}kWh, Bill=₹${_predictedMonthlyBill}');
+        } else {
+          setState(() {
+            _errorMessage =
+                billData['message']?.toString() ?? 'No billing data found yet.';
+          });
         }
       } else {
         // Fallback to manual calculation if billing view fails
@@ -109,6 +144,10 @@ class _BillPredictionScreenState extends State<BillPredictionScreen> {
       }
     } catch (e) {
       debugPrint('❌ Sync Error: $e');
+      setState(() {
+        _errorMessage =
+            'Failed to load bill prediction. Check backend connection.';
+      });
       // Fallback if billing fetch fails
       try {
         await _fetchSummaryDataFallback();
@@ -273,8 +312,8 @@ class _BillPredictionScreenState extends State<BillPredictionScreen> {
       } else if (socketName == "Both Sockets") {
         // Turn off both relays via backend
         final host = ApiService.baseUrl.replaceFirst('/api', '');
-        await http.post(Uri.parse('$host/api/relay/relay1/off')).timeout(ApiService.connectionTimeout);
-        await http.post(Uri.parse('$host/api/relay/relay2/off')).timeout(ApiService.connectionTimeout);
+        await http.get(Uri.parse('$host/api/relay/relay1/off')).timeout(ApiService.connectionTimeout);
+        await http.get(Uri.parse('$host/api/relay/relay2/off')).timeout(ApiService.connectionTimeout);
         
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
@@ -290,7 +329,7 @@ class _BillPredictionScreenState extends State<BillPredictionScreen> {
       }
 
       final host = ApiService.baseUrl.replaceFirst('/api', '');
-      final response = await http.post(
+      final response = await http.get(
         Uri.parse('$host$endpoint'),
       ).timeout(ApiService.connectionTimeout);
 
@@ -347,7 +386,18 @@ class _BillPredictionScreenState extends State<BillPredictionScreen> {
       currentRoute: '/bill-prediction',
       body: _isLoading 
         ? const Center(child: CircularProgressIndicator()) 
-        : SingleChildScrollView(
+        : (_userId == null)
+            ? Center(
+                child: Padding(
+                  padding: const EdgeInsets.all(20),
+                  child: Text(
+                    _errorMessage ?? 'Please log in to continue.',
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(color: Colors.white70, fontSize: 16),
+                  ),
+                ),
+              )
+            : SingleChildScrollView(
             padding: const EdgeInsets.all(20),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -355,6 +405,27 @@ class _BillPredictionScreenState extends State<BillPredictionScreen> {
                 const Text('💰 Bill Predictor', 
                   style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: Colors.white)),
                 const SizedBox(height: 20),
+                Text(
+                  'User: ${_userId ?? '-'}',
+                  style: const TextStyle(color: Colors.white38, fontSize: 12),
+                ),
+                const SizedBox(height: 10),
+                if (_errorMessage != null) ...[
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(14),
+                    decoration: BoxDecoration(
+                      color: Colors.red.withOpacity(0.12),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: Colors.red.withOpacity(0.35)),
+                    ),
+                    child: Text(
+                      _errorMessage!,
+                      style: const TextStyle(color: Colors.white70),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                ],
                 _buildMainPredictionCard(),
                 const SizedBox(height: 20),
                 _buildMonthlyComparisonRow(),
@@ -432,7 +503,13 @@ class _BillPredictionScreenState extends State<BillPredictionScreen> {
         border: Border.all(color: Colors.white10),
       ),
       child: _lineDataPoints.isEmpty 
-        ? const Center(child: Text("Loading history data...", style: TextStyle(color: Colors.white54)))
+        ? const Center(
+            child: Text(
+              "No usage history yet.\nKeep the ESP32 running for a few minutes.",
+              textAlign: TextAlign.center,
+              style: TextStyle(color: Colors.white54),
+            ),
+          )
         : LineChart(
             LineChartData(
               minY: 0,

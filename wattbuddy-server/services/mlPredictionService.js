@@ -154,6 +154,75 @@ class MLPredictionService {
     }
   }
 
+  /**
+   * Detect whether the _latest_ reading is anomalous compared to recent history.
+   * Uses a simple Z-score model over the last N readings (statistical ML).
+   */
+  static async detectLatestAnomaly(userId, options = {}) {
+    try {
+      if (!userId || userId === 'null' || userId === 'undefined') {
+        return { isAnomaly: false };
+      }
+
+      const windowSize = options.windowSize || 100;
+      const zThreshold = options.zThreshold || 2.5;
+
+      const result = await db.query(
+        `SELECT power_consumption, recorded_at
+         FROM energy_readings
+         WHERE user_id = $1
+         ORDER BY recorded_at DESC
+         LIMIT $2`,
+        [userId, windowSize]
+      );
+
+      if (result.rows.length < 10) {
+        // Not enough history to say anything meaningful
+        return { isAnomaly: false, reason: 'insufficient_history' };
+      }
+
+      // Oldest → newest
+      const rowsAsc = [...result.rows].reverse();
+      const powers = rowsAsc.map(r => Number(r.power_consumption) || 0);
+
+      const latestPower = powers[powers.length - 1];
+      const history = powers.slice(0, -1);
+
+      const mean =
+        history.reduce((sum, v) => sum + v, 0) / history.length;
+      const variance =
+        history.reduce((sum, v) => sum + Math.pow(v - mean, 2), 0) /
+        history.length;
+      const stdDev = Math.sqrt(variance);
+
+      if (!isFinite(stdDev) || stdDev < 1e-3) {
+        // Too flat to compute a meaningful Z-score
+        return {
+          isAnomaly: false,
+          latestPower,
+          mean,
+          stdDev,
+          reason: 'low_variance',
+        };
+      }
+
+      const zScore = Math.abs(latestPower - mean) / stdDev;
+      const isAnomaly = zScore >= zThreshold;
+
+      return {
+        isAnomaly,
+        latestPower,
+        mean,
+        stdDev,
+        zScore,
+        timestamp: rowsAsc[rowsAsc.length - 1].recorded_at,
+      };
+    } catch (error) {
+      console.error('❌ Error in detectLatestAnomaly:', error);
+      return { isAnomaly: false, error: error.message };
+    }
+  }
+
   // Get energy-saving recommendations based on ML analysis
   static async getRecommendations(userId) {
     try {

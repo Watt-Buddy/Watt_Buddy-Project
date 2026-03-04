@@ -135,6 +135,7 @@ flutter run -d android    # Android device
 
 ### Billing
 - `GET /api/billing/current/:userId` - Fetch calculated bill from SQL view
+- `GET /api/billing/history/:userId` - Retrieve past month bills (period, due date, amount, units, status)
 - `GET /api/power-limit/:userId` - Get user's power limit settings
 
 ### Real-Time Control

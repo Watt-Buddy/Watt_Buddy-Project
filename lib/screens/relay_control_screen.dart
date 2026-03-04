@@ -25,7 +25,7 @@ class _RelayControlScreenState extends State<RelayControlScreen> {
   Future<void> _loadUserAndSensorData() async {
     final prefs = await SharedPreferences.getInstance();
     final userJson = prefs.getString('wattBuddyUser');
-    
+
     if (userJson != null) {
       final user = jsonDecode(userJson);
       setState(() => _userId = user['id'].toString());
@@ -47,9 +47,11 @@ class _RelayControlScreenState extends State<RelayControlScreen> {
 
   Future<void> _fetchRelayStatus() async {
     try {
-      final data = await ApiService.get('/relay/status/$_userId');
+      // Use the correct endpoint that matches server.js: /api/relay/status
+      final data = await ApiService.get('/relay/status');
       if (mounted) {
-        setState(() => _relayState = data['relayState'] ?? false);
+        // server.js returns { success: true, relay1: 0/1, relay2: 0/1, timestamp: ... }
+        setState(() => _relayState = (data['relay1'] ?? 0) == 1);
       }
     } catch (e) {
       debugPrint('Error fetching relay status: $e');
@@ -61,24 +63,35 @@ class _RelayControlScreenState extends State<RelayControlScreen> {
 
     try {
       final newState = !_relayState;
-      final endpoint = newState ? '/relay/on' : '/relay/off';
-      
-      await ApiService.post(endpoint, {'userId': _userId});
+      // Use the correct endpoint that matches server.js: /api/relay/relay1/on or /api/relay/relay1/off
+      final endpoint = newState ? '/relay/relay1/on' : '/relay/relay1/off';
 
-      if (mounted) {
-        setState(() => _relayState = newState);
-        
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              'Relay turned ${newState ? 'ON' : 'OFF'} successfully',
+      debugPrint('📤 Sending relay command: $endpoint');
+
+      // Use GET request (matching server.js endpoints)
+      final resp = await ApiService.get(endpoint);
+
+      debugPrint('📥 Response: $resp');
+
+      if (resp['success'] == true) {
+        if (mounted) {
+          setState(() => _relayState = newState);
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content:
+                  Text('Relay turned ${newState ? 'ON' : 'OFF'} successfully'),
+              backgroundColor: newState ? Colors.green : Colors.orange,
             ),
-            backgroundColor: newState ? Colors.green : Colors.orange,
-          ),
-        );
+          );
+        }
+      } else {
+        // Check if ESP32 is unreachable
+        final errorMsg =
+            resp['message'] ?? resp['error'] ?? 'Failed to toggle relay';
+        throw Exception(errorMsg);
       }
 
-      _fetchSensorData();
+      await _fetchSensorData();
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -160,9 +173,7 @@ class _RelayControlScreenState extends State<RelayControlScreen> {
 
                     // Status Description
                     Text(
-                      _relayState
-                          ? 'Current is flowing'
-                          : 'Current is cut off',
+                      _relayState ? 'Current is flowing' : 'Current is cut off',
                       style: TextStyle(
                         fontSize: 14,
                         color: Colors.white.withOpacity(0.8),

@@ -25,8 +25,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Map<String, dynamic>? esp32Data;
   Timer? _refreshTimer;
 
-
-
   // ---------------- INIT ----------------
   @override
   void initState() {
@@ -113,7 +111,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       border: Border.all(color: Colors.cyanAccent, width: 1),
                     ),
                     child: IconButton(
-                      icon: const Icon(Icons.refresh, color: Colors.cyanAccent, size: 28),
+                      icon: const Icon(Icons.refresh,
+                          color: Colors.cyanAccent, size: 28),
                       onPressed: _loadEsp32Data,
                       tooltip: 'Pull down to refresh or tap here',
                       iconSize: 28,
@@ -127,114 +126,114 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 style: const TextStyle(color: Colors.white70, fontSize: 16),
               ),
               const SizedBox(height: 20),
-            
-            // USER DETAILS CARD
-            Container(
-              padding: const EdgeInsets.all(20),
-              decoration: BoxDecoration(
-                color: Colors.white.withValues(alpha: 0.08),
-                borderRadius: BorderRadius.circular(14),
-                border: Border.all(color: Colors.white24),
-              ),
-              child: Row(
-                children: [
-                  CircleAvatar(
-                    radius: 30,
-                    backgroundColor: Colors.cyanAccent,
-                    child: Text(
-                      username.isNotEmpty ? username[0].toUpperCase() : 'U',
-                      style: const TextStyle(
-                        fontSize: 24,
-                        fontWeight: FontWeight.bold,
-                        color: Color(0xFF0A0A2A),
+
+              // USER DETAILS CARD
+              Container(
+                padding: const EdgeInsets.all(20),
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: 0.08),
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: Colors.white24),
+                ),
+                child: Row(
+                  children: [
+                    CircleAvatar(
+                      radius: 30,
+                      backgroundColor: Colors.cyanAccent,
+                      child: Text(
+                        username.isNotEmpty ? username[0].toUpperCase() : 'U',
+                        style: const TextStyle(
+                          fontSize: 24,
+                          fontWeight: FontWeight.bold,
+                          color: Color(0xFF0A0A2A),
+                        ),
                       ),
                     ),
-                  ),
-                  const SizedBox(width: 20),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          username,
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 18,
-                            fontWeight: FontWeight.bold,
+                    const SizedBox(width: 20),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            username,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                            ),
                           ),
-                        ),
-                        const SizedBox(height: 4),
-                        Text(
-                          userEmail,
-                          style: const TextStyle(
-                            color: Colors.white70,
-                            fontSize: 13,
+                          const SizedBox(height: 4),
+                          Text(
+                            userEmail,
+                            style: const TextStyle(
+                              color: Colors.white70,
+                              fontSize: 13,
+                            ),
                           ),
-                        ),
-                        const SizedBox(height: 4),
-                        Text(
-                          'Consumer #: $consumerNumber',
-                          style: const TextStyle(
-                            color: Colors.white70,
-                            fontSize: 12,
+                          const SizedBox(height: 4),
+                          Text(
+                            'Consumer #: $consumerNumber',
+                            style: const TextStyle(
+                              color: Colors.white70,
+                              fontSize: 12,
+                            ),
                           ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 30),
-
-            // METRIC CARDS (LIVE DATA)
-            LayoutBuilder(
-              builder: (context, constraints) {
-                int crossAxisCount = 4;
-                if (constraints.maxWidth < 1200) crossAxisCount = 2;
-                if (constraints.maxWidth < 600) crossAxisCount = 1;
-
-                return GridView.count(
-                  shrinkWrap: true,
-                  physics: const NeverScrollableScrollPhysics(),
-                  crossAxisCount: crossAxisCount,
-                  crossAxisSpacing: 16,
-                  mainAxisSpacing: 16,
-                  childAspectRatio:
-                      MediaQuery.of(context).size.width < 600 ? 3.0 : 3.8,
-                  children: [
-                    _metricCard(
-                      "Current Power",
-                      esp32Data?['power']?.toStringAsFixed(1) ?? '2.45',
-                      "W",
-                      Icons.flash_on,
-                    ),
-                    _metricCard(
-                      "Voltage",
-                      esp32Data?['voltage']?.toString() ?? '230',
-                      "V",
-                      Icons.electric_bolt,
-                    ),
-                    _metricCard(
-                      "Current",
-                      esp32Data?['current']?.toString() ?? '1.2',
-                      "A",
-                      Icons.trending_up,
-                    ),
-                    _metricCard(
-                      "Energy Used",
-                      esp32Data?['energy']?.toString() ?? '125.5',
-                      "kWh",
-                      Icons.battery_charging_full,
+                        ],
+                      ),
                     ),
                   ],
-                );
-              },
-            ),
+                ),
+              ),
+              const SizedBox(height: 30),
 
-            const SizedBox(height: 30),
-          ],
-        ),
+              // METRIC CARDS (LIVE DATA)
+              LayoutBuilder(
+                builder: (context, constraints) {
+                  int crossAxisCount = 4;
+                  if (constraints.maxWidth < 1200) crossAxisCount = 2;
+                  if (constraints.maxWidth < 600) crossAxisCount = 1;
+
+                  return GridView.count(
+                    shrinkWrap: true,
+                    physics: const NeverScrollableScrollPhysics(),
+                    crossAxisCount: crossAxisCount,
+                    crossAxisSpacing: 16,
+                    mainAxisSpacing: 16,
+                    childAspectRatio:
+                        MediaQuery.of(context).size.width < 600 ? 3.0 : 3.8,
+                    children: [
+                      _metricCard(
+                        "Current Power",
+                        esp32Data?['power']?.toStringAsFixed(1) ?? '2.45',
+                        "W",
+                        Icons.flash_on,
+                      ),
+                      _metricCard(
+                        "Voltage",
+                        esp32Data?['voltage']?.toString() ?? '230',
+                        "V",
+                        Icons.electric_bolt,
+                      ),
+                      _metricCard(
+                        "Current",
+                        esp32Data?['current']?.toString() ?? '1.2',
+                        "A",
+                        Icons.trending_up,
+                      ),
+                      _metricCard(
+                        "Energy Used",
+                        esp32Data?['energy']?.toString() ?? '125.5',
+                        "kWh",
+                        Icons.battery_charging_full,
+                      ),
+                    ],
+                  );
+                },
+              ),
+
+              const SizedBox(height: 30),
+            ],
+          ),
         ),
       ),
     );
@@ -277,5 +276,3 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 }
-
-

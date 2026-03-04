@@ -1,5 +1,11 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:fl_chart/fl_chart.dart';
+
 import '../utils/responsive_scaffold.dart';
+import '../services/bill_history_service.dart';
 
 class BillHistoryScreen extends StatefulWidget {
   const BillHistoryScreen({super.key});
@@ -9,36 +15,68 @@ class BillHistoryScreen extends StatefulWidget {
 }
 
 class _BillHistoryScreenState extends State<BillHistoryScreen> {
-  final List<Map<String, dynamic>> bills = [
-    {
-      'period': 'Sep 12 - Oct 12, 2025',
-      'dueDate': 'Oct 25, 2025',
-      'amount': 870.50,
-      'units': 124,
-      'status': 'due',
-    },
-    {
-      'period': 'Aug 12 - Sep 12, 2025',
-      'dueDate': 'Sep 25, 2025',
-      'amount': 795.00,
-      'units': 112,
-      'status': 'paid',
-    },
-    {
-      'period': 'Jul 12 - Aug 12, 2025',
-      'dueDate': 'Aug 25, 2025',
-      'amount': 910.20,
-      'units': 135,
-      'status': 'paid',
-    },
-    {
-      'period': 'Jun 12 - Jul 12, 2025',
-      'dueDate': 'Jul 25, 2025',
-      'amount': 850.75,
-      'units': 121,
-      'status': 'paid',
-    },
-  ];
+  List<Map<String, dynamic>> bills = []; // will be populated from API
+  bool _isLoading = true;
+  String? _errorMessage;
+  String? _userId;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadUserAndBills();
+  }
+
+  Future<void> _loadUserAndBills() async {
+    // reuse logic similar to prediction screen to get stored user id
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final userJson = prefs.getString('wattBuddyUser');
+      if (userJson == null) throw Exception('no session');
+      final user = jsonDecode(userJson);
+      final id = user['id'];
+      if (id == null) throw Exception('missing id');
+      setState(() {
+        _userId = id.toString();
+      });
+      await _fetchBillHistory();
+    } catch (e) {
+      setState(() {
+        _errorMessage = 'Unable to load user session.';
+        _isLoading = false;
+      });
+    }
+  }
+
+  Future<void> _fetchBillHistory() async {
+    if (_userId == null) return;
+
+    setState(() {
+      _isLoading = true;
+      _errorMessage = null;
+    });
+
+    try {
+      final data = await BillHistoryService.getHistory(_userId!);
+      if (data.isEmpty) {
+        setState(() {
+          _errorMessage = 'No bill history available';
+          bills = [];
+        });
+      } else {
+        setState(() {
+          bills = data;
+        });
+      }
+    } catch (e) {
+      setState(() {
+        _errorMessage = 'Failed to fetch bill history';
+      });
+    } finally {
+      setState(() {
+        _isLoading = false;
+      });
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -66,18 +104,34 @@ class _BillHistoryScreenState extends State<BillHistoryScreen> {
 
             const SizedBox(height: 30),
 
-            // RESPONSIVE CONTENT
-            LayoutBuilder(
-              builder: (context, c) {
-                if (c.maxWidth < 700) {
-                  // 📱 MOBILE → CARD LIST
-                  return Column(children: bills.map(_mobileBillCard).toList());
-                } else {
-                  // 💻 DESKTOP → TABLE
-                  return _desktopTable();
-                }
-              },
-            ),
+            // FETCH STATES
+            if (_isLoading) const Center(child: CircularProgressIndicator()),
+            if (!_isLoading && _errorMessage != null)
+              Center(
+                child: Text(_errorMessage!,
+                    style: const TextStyle(color: Colors.white70)),
+              ),
+
+            // If we have data show graph + table/cards
+            if (!_isLoading && _errorMessage == null && bills.isNotEmpty) ...[
+              // simple bar chart comparing bill amounts
+              _historyChart(),
+              const SizedBox(height: 30),
+
+              // RESPONSIVE CONTENT
+              LayoutBuilder(
+                builder: (context, c) {
+                  if (c.maxWidth < 700) {
+                    // 📱 MOBILE → CARD LIST
+                    return Column(
+                        children: bills.map(_mobileBillCard).toList());
+                  } else {
+                    // 💻 DESKTOP → TABLE
+                    return _desktopTable();
+                  }
+                },
+              ),
+            ],
           ],
         ),
       ),
@@ -196,6 +250,60 @@ class _BillHistoryScreenState extends State<BillHistoryScreen> {
         style: TextStyle(
           color: paid ? Colors.green : Colors.orange,
           fontWeight: FontWeight.bold,
+        ),
+      ),
+    );
+  }
+
+  // --------- CHART ----------
+
+  Widget _historyChart() {
+    // show bar chart of amounts
+    final barGroups = <BarChartGroupData>[];
+    for (var i = 0; i < bills.length; i++) {
+      final amount = (bills[i]['amount'] as num?)?.toDouble() ?? 0.0;
+      barGroups.add(BarChartGroupData(
+        x: i,
+        barRods: [BarChartRodData(toY: amount, color: Colors.cyanAccent)],
+      ));
+    }
+
+    return Container(
+      height: 200,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(15),
+        border: Border.all(color: Colors.white24),
+      ),
+      child: BarChart(
+        BarChartData(
+          titlesData: FlTitlesData(
+            leftTitles: AxisTitles(
+              sideTitles: SideTitles(showTitles: true, interval: 200),
+            ),
+            bottomTitles: AxisTitles(
+              sideTitles: SideTitles(
+                showTitles: true,
+                getTitlesWidget: (value, meta) {
+                  if (value.toInt() < 0 || value.toInt() >= bills.length) {
+                    return const SizedBox.shrink();
+                  }
+                  final label = bills[value.toInt()]['period'] ?? '';
+                  return SideTitleWidget(
+                    axisSide: meta.axisSide,
+                    child: Text(
+                      label.toString().split(' ').first,
+                      style:
+                          const TextStyle(color: Colors.white70, fontSize: 10),
+                    ),
+                  );
+                },
+              ),
+            ),
+          ),
+          borderData: FlBorderData(show: false),
+          barGroups: barGroups,
         ),
       ),
     );

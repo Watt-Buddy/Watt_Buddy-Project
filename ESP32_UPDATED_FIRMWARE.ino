@@ -8,16 +8,18 @@
 const char* ssid = "realme C31";
 const char* pass = "anjaah@123";
 
-IPAddress local_IP(10, 40, 59, 203);      // ESP32 static IP (pick a free one)
-IPAddress gateway(10, 40, 59, 240);       // From ipconfig: Default Gateway
-IPAddress subnet(255, 255, 255, 0);
+// (Optional) Static IP configuration - currently unused (DHCP mode)
+// IPAddress local_IP(10, 148, 3, 100);    // Example static IP on same subnet as PC (10.148.3.x)
+// IPAddress gateway(10, 148, 3, 211);     // From ipconfig: Default Gateway
+// IPAddress subnet(255, 255, 255, 0);
 
 #define RELAY1_PIN 23 
 #define RELAY2_PIN 19 
 #define ACS_PIN 34
 #define ZMPT_PIN 35
 
-const char* SERVER_IP = "10.40.59.214";  // CORRECTED: Was 192.168.6.214
+// Backend server (your PC) IP - from ipconfig: 10.148.3.49
+const char* SERVER_IP = "10.185.178.50";
 const int SERVER_PORT = 4000;
 
 float Vrms = 0.0, Irms = 0.0, Power = 0.0, energy_kWh = 0.0;
@@ -146,6 +148,7 @@ void checkNetworkDiagnostics() {
 void postData() {
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("❌ WiFi not connected, skipping POST");
+    checkNetworkDiagnostics();  // show reason for lack of connection
     return;
   }
 
@@ -228,7 +231,8 @@ void setup() {
 
   Serial.println("📡 Connecting to WiFi...");
   WiFi.mode(WIFI_STA);
-  WiFi.config(local_IP, gateway, subnet);
+
+  // Use DHCP for IP assignment (simpler and avoids mismatch with backend PC)
   WiFi.begin(ssid, pass);
   
   int attempts = 0;
@@ -245,6 +249,28 @@ void setup() {
     Serial.println(WiFi.localIP());
   } else {
     Serial.println("❌ WiFi Connection Failed!");
+    checkNetworkDiagnostics();
+
+    // retry once using DHCP instead of static IP
+    Serial.println("⚠️ Retrying connection with DHCP (no static IP)");
+    WiFi.disconnect(true);           // clear previous settings
+    WiFi.config(INADDR_NONE, INADDR_NONE, INADDR_NONE);
+    WiFi.begin(ssid, pass);
+    attempts = 0;
+    while (WiFi.status() != WL_CONNECTED && attempts < 20) {
+      delay(500);
+      Serial.print("+");
+      attempts++;
+    }
+    Serial.println();
+    if (WiFi.status() == WL_CONNECTED) {
+      Serial.println("✅ Connected via DHCP!");
+      Serial.print("IP: ");
+      Serial.println(WiFi.localIP());
+    } else {
+      Serial.println("❌ Still unable to connect after DHCP retry");
+      checkNetworkDiagnostics();
+    }
   }
 
   // NEW ROUTE: Provisioning endpoint for Flutter app
@@ -261,22 +287,35 @@ void setup() {
 
   server.on("/relay1/on", []() { 
     digitalWrite(RELAY1_PIN, LOW); 
+    Serial.printf("🟢 HTTP /relay1/on -> RELAY1_PIN=%d (digitalRead=%d)\n", RELAY1_PIN, digitalRead(RELAY1_PIN));
     server.send(200, "text/plain", "1"); 
   });
   
   server.on("/relay1/off", []() { 
     digitalWrite(RELAY1_PIN, HIGH); 
+    Serial.printf("🔴 HTTP /relay1/off -> RELAY1_PIN=%d (digitalRead=%d)\n", RELAY1_PIN, digitalRead(RELAY1_PIN));
     server.send(200, "text/plain", "0"); 
   });
   
   server.on("/relay2/on", []() { 
     digitalWrite(RELAY2_PIN, LOW); 
+    Serial.printf("🟢 HTTP /relay2/on -> RELAY2_PIN=%d (digitalRead=%d)\n", RELAY2_PIN, digitalRead(RELAY2_PIN));
     server.send(200, "text/plain", "1"); 
   });
   
   server.on("/relay2/off", []() { 
     digitalWrite(RELAY2_PIN, HIGH); 
+    Serial.printf("🔴 HTTP /relay2/off -> RELAY2_PIN=%d (digitalRead=%d)\n", RELAY2_PIN, digitalRead(RELAY2_PIN));
     server.send(200, "text/plain", "0"); 
+  });
+
+  // Debug endpoint: confirm what the ESP32 thinks relay states are.
+  // Note: in this wiring, LOW means relay ON, HIGH means relay OFF.
+  server.on("/relay/status", HTTP_GET, []() {
+    const int r1 = (digitalRead(RELAY1_PIN) == LOW) ? 1 : 0;
+    const int r2 = (digitalRead(RELAY2_PIN) == LOW) ? 1 : 0;
+    String json = "{\"relay1\":" + String(r1) + ",\"relay2\":" + String(r2) + "}";
+    server.send(200, "application/json", json);
   });
 
   server.begin();

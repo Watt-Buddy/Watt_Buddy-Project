@@ -4,9 +4,14 @@ const http = require('http');
 const socketIO = require('socket.io');
 const moment = require('moment');
 const cron = require('node-cron');
+const axios = require('axios');
 
 const app = express();
 const server = http.createServer(app);
+
+// ESP32 IP Address - Update this to match your ESP32's IP
+const ESP32_IP = '10.185.178.50';
+const ESP32_PORT = 80;
 
 // Use Socket.io to broadcast data to your Flutter App/Dashboard
 const io = socketIO(server, { 
@@ -22,6 +27,7 @@ let esp32LatestData = {
   energy: 0,
   relay1: 0, 
   relay2: 0, 
+  userId: null,
   timestamp: new Date().toISOString()
 };
 
@@ -92,6 +98,7 @@ app.post('/api/esp32/data', async (req, res) => {
       energy: parsedEnergy,
       relay1: parsedRelay1,
       relay2: parsedRelay2,
+      userId: (userId !== undefined && userId !== null) ? String(userId) : null,
       dominantRelay: parsedDominantRelay,
       dominantPower: parsedDominantPower,
       timestamp: new Date().toISOString()
@@ -103,45 +110,53 @@ app.post('/api/esp32/data', async (req, res) => {
     // 3. Broadcast to Flutter (Every 5 seconds for live dashboard)
     io.emit('live_data_update', esp32LatestData);
     
-    // ============ ANOMALY DETECTION & REAL-TIME ALERT ============
-    // Detect power spikes > 2x baseline (baseline = 75W, threshold = 150W)
-    const baselineAvgPower = 75; // Conservative baseline
-    const anomalyThreshold = baselineAvgPower * 2.0; // 150W
-    const currentPower = parsedPower;
-    
-    if (currentPower > anomalyThreshold) {
-      // Identify which socket is causing the spike
-      let problematicSocket = "Both Sockets";
-      let dominantInfo = '';
+    // ============ ML-BASED ANOMALY DETECTION & REAL-TIME ALERT ============
+    // Use statistical ML (Z-score) on recent history instead of a fixed threshold.
+    try {
+      const mlResult = await MLPredictionService.detectLatestAnomaly(userId || '8');
 
-      if (parsedDominantRelay === 1 || parsedDominantRelay === 2) {
-        problematicSocket = parsedDominantRelay === 1 ? "Socket 1" : "Socket 2";
-        if (parsedDominantPower > 0) {
-          dominantInfo = ` (~${parsedDominantPower.toFixed(0)}W from this device)`;
+      if (mlResult && mlResult.isAnomaly) {
+        const currentPower = mlResult.latestPower ?? parsedPower;
+
+        // Identify which socket is causing the spike
+        let problematicSocket = "Both Sockets";
+        let dominantInfo = '';
+
+        if (parsedDominantRelay === 1 || parsedDominantRelay === 2) {
+          problematicSocket = parsedDominantRelay === 1 ? "Socket 1" : "Socket 2";
+          if (parsedDominantPower > 0) {
+            dominantInfo = ` (~${parsedDominantPower.toFixed(0)}W from this device)`;
+          }
+        } else {
+          // Fallback: infer from relay states if diagnosis not available
+          if (relay1 === 1 && relay2 === 0) {
+            problematicSocket = "Socket 1";
+          } else if (relay2 === 1 && relay1 === 0) {
+            problematicSocket = "Socket 2";
+          }
         }
-      } else {
-        // Fallback: infer from relay states if diagnosis not available
-        if (relay1 === 1 && relay2 === 0) {
-          problematicSocket = "Socket 1";
-        } else if (relay2 === 1 && relay1 === 0) {
-          problematicSocket = "Socket 2";
-        }
+
+        const baselineInfo = mlResult.mean != null && mlResult.stdDev != null
+          ? ` (baseline ≈ ${mlResult.mean.toFixed(0)}W, z≈${mlResult.zScore?.toFixed(2) ?? '?.??'})`
+          : '';
+
+        // Emit real-time alert to Flutter app via WebSocket
+        io.emit('anomaly_alert', {
+          isAbnormal: true,
+          anomalySocket: problematicSocket,
+          currentPower: currentPower,
+          threshold: mlResult.mean ?? 0,
+          dominantRelay: parsedDominantRelay,
+          dominantPower: parsedDominantPower,
+          message: `⚠️ ML anomaly detected on ${problematicSocket}! Power: ${currentPower.toFixed(0)}W${dominantInfo}${baselineInfo}`,
+          timestamp: new Date().toISOString(),
+          userId: userId || '8'
+        });
+
+        console.log(`🚨 [ML ANOMALY ALERT] ${problematicSocket} - Power: ${currentPower}W, z≈${mlResult.zScore?.toFixed(2) ?? 'N/A'}`);
       }
-      
-      // Emit real-time alert to Flutter app via WebSocket
-      io.emit('anomaly_alert', {
-        isAbnormal: true,
-        anomalySocket: problematicSocket,
-        currentPower: currentPower,
-        threshold: anomalyThreshold,
-        dominantRelay: parsedDominantRelay,
-        dominantPower: parsedDominantPower,
-        message: `⚠️ High usage detected on ${problematicSocket}! Power: ${currentPower.toFixed(0)}W${dominantInfo}`,
-        timestamp: new Date().toISOString(),
-        userId: userId || '8'
-      });
-      
-      console.log(`🚨 [ANOMALY ALERT] ${problematicSocket} - Power: ${currentPower}W (Threshold: ${anomalyThreshold}W, DominantRelay=${parsedDominantRelay}, DominantPower=${parsedDominantPower}W)`);
+    } catch (mlErr) {
+      console.error('❌ ML anomaly detection failed:', mlErr);
     }
     
     // 2. SAVE TO DATABASE (Optimized: Only write if conditions met)
@@ -229,7 +244,7 @@ app.get('/api/usage/summary/:userId', async (req, res) => {
         const { userId } = req.params;
         const pool = require('./db');
 
-        const query = `
+        const summaryQuery = `
             SELECT 
                 (SELECT COALESCE(MAX(energy_consumed) - MIN(energy_consumed), 0)
                  FROM "EnergyReadings"
@@ -250,15 +265,68 @@ app.get('/api/usage/summary/:userId', async (req, res) => {
             LIMIT 1
         `;
         
-        const result = await pool.query(query, [userId]);
-        const data = result.rows[0];
+        const result = await pool.query(summaryQuery, [userId]);
+        const data = result.rows[0] || {};
+
+        const currentMonthKwh = parseFloat(data.current_month || 0);
+        const lastMonthKwh = parseFloat(data.last_month || 0);
+        const historicalAvgPower = parseFloat(data.historical_avg_power || 0);
+
+        // Simple anomaly detection based on latest power reading vs historical average
+        let isAbnormal = false;
+        let anomalySocket = null;
+        let currentPower = 0;
+
+        try {
+          const latestRes = await pool.query(
+            `SELECT power, relay1, relay2, timestamp
+             FROM "EnergyReadings"
+             WHERE user_id = $1::text
+             ORDER BY timestamp DESC
+             LIMIT 1`,
+            [userId]
+          );
+
+          if (latestRes.rows.length > 0) {
+            const latest = latestRes.rows[0];
+            currentPower = parseFloat(latest.power || 0);
+
+            const relay1 = parseInt(latest.relay1 ?? 0);
+            const relay2 = parseInt(latest.relay2 ?? 0);
+
+            // Use historical average when available, otherwise fall back to 150W
+            const baseline = Number.isFinite(historicalAvgPower) && historicalAvgPower > 0
+              ? historicalAvgPower
+              : 75;
+            const threshold = baseline * 2.0; // match ESP32/real-time anomaly threshold
+
+            if (currentPower > threshold) {
+              isAbnormal = true;
+
+              if (relay1 === 1 && relay2 !== 1) {
+                anomalySocket = 'Socket 1';
+              } else if (relay2 === 1 && relay1 !== 1) {
+                anomalySocket = 'Socket 2';
+              } else {
+                anomalySocket = 'Both Sockets';
+              }
+            }
+          }
+        } catch (anomalyErr) {
+          console.warn('⚠️ Failed to compute anomaly summary:', anomalyErr.message || anomalyErr);
+        }
 
         res.json({
             success: true,
-            currentMonthKwh: parseFloat(data.current_month || 0),
-            lastMonthKwh: parseFloat(data.last_month || 0),
-            historicalAvg: parseFloat(data.historical_avg_power || 0),
-            daysElapsed: new Date().getDate()
+            currentMonthKwh,
+            lastMonthKwh,
+            historicalAvg: historicalAvgPower,
+            historicalAvgPower,
+            daysElapsed: new Date().getDate(),
+            // Anomaly fields expected by Flutter `BillPredictionScreen`
+            isAbnormal,
+            anomalySocket,
+            currentPower,
         });
     } catch (err) {
         console.error('❌ Usage Summary Error:', err);
@@ -307,19 +375,88 @@ app.get('/api/billing/current/:userId', async (req, res) => {
         const { userId } = req.params;
         const pool = require('./db');
         
-        // This pulls from the SQL View you created in pgAdmin
-        const result = await pool.query(
-            'SELECT * FROM view_user_bills WHERE user_id = $1', 
-            [userId]
-        );
+        // Prefer SQL View (if present), but gracefully fallback if it doesn't exist.
+        try {
+            const result = await pool.query(
+                'SELECT * FROM view_user_bills WHERE user_id = $1',
+                [userId]
+            );
 
-        if (result.rows.length > 0) {
-            res.json({ success: true, billing: result.rows[0] });
-        } else {
-            res.json({ success: false, message: "No data found" });
+            if (result.rows.length > 0) {
+                return res.json({ success: true, billing: result.rows[0], source: 'view_user_bills' });
+            }
+        } catch (viewErr) {
+            console.warn('⚠️ view_user_bills unavailable, falling back:', viewErr.message || viewErr);
         }
+
+        // Fallback: compute current-month usage from EnergyReadings
+        // Usage = MAX(energy_consumed) - MIN(energy_consumed) this month
+        const usageQuery = `
+            SELECT
+                COALESCE(MAX(energy_consumed) - MIN(energy_consumed), 0) AS total_units_kwh
+            FROM "EnergyReadings"
+            WHERE user_id = $1::text
+              AND timestamp >= DATE_TRUNC('month', CURRENT_DATE)
+        `;
+
+        const usageRes = await pool.query(usageQuery, [userId]);
+        const kwh = parseFloat(usageRes.rows?.[0]?.total_units_kwh) || 0;
+
+        // Simple tariff fallback (aligns with Flutter defaults)
+        const baseCharge = 50;
+        const ratePerKwh = 10;
+        const billRs = baseCharge + (kwh * ratePerKwh);
+
+        return res.json({
+            success: true,
+            source: 'EnergyReadings_fallback',
+            billing: {
+                user_id: userId,
+                total_units_kwh: kwh,
+                slab_bill_rs: billRs,
+                base_charge_rs: baseCharge,
+                rate_per_kwh: ratePerKwh,
+            }
+        });
     } catch (err) {
-        res.status(500).json({ error: err.message });
+        console.error('❌ Error fetching current bill:', err);
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// ============ FETCH HISTORICAL BILLS ============
+// Used by the Flutter `BillHistoryScreen` and `BillHistoryService`
+app.get('/api/billing/history/:userId', async (req, res) => {
+    try {
+        const { userId } = req.params;
+        const pool = require('./db');
+
+        // Compute monthly usage and bill for past months using energy readings.
+        // Amount calculation mirrors the same fallback logic used above.
+        const historyQuery = `
+            SELECT
+                to_char(month, 'Mon YYYY') AS period,
+                to_char(month + interval '1 month' - interval '1 day', 'Mon DD, YYYY') AS "dueDate",
+                (kwh * 10 + 50)::numeric AS amount,
+                kwh AS units,
+                CASE WHEN kwh > 0 THEN 'paid' ELSE 'due' END AS status
+            FROM (
+                SELECT
+                    date_trunc('month', timestamp) AS month,
+                    COALESCE(MAX(energy_consumed) - MIN(energy_consumed), 0) AS kwh
+                FROM "EnergyReadings"
+                WHERE user_id = $1::text
+                GROUP BY 1
+                ORDER BY 1 DESC
+                LIMIT 12
+            ) sub;
+        `;
+
+        const result = await pool.query(historyQuery, [userId]);
+        return res.json({ success: true, bills: result.rows });
+    } catch (err) {
+        console.error('❌ Error fetching billing history:', err);
+        res.status(500).json({ success: false, error: err.message });
     }
 });
 
@@ -402,28 +539,55 @@ app.get('/api/ml-predict/next-hour/:userId', async (req, res) => {
 });
 
 // ============ RELAY CONTROL ENDPOINTS ============
+// Helper function to send command to ESP32
+async function sendRelayCommandToESP32(relayNumber, command) {
+  const url = `http://${ESP32_IP}:${ESP32_PORT}/relay${relayNumber}/${command}`;
+  console.log(`📡 Sending relay command to ESP32: ${url}`);
+  
+  try {
+    const response = await axios.get(url, { timeout: 5000 });
+    console.log(`✅ ESP32 responded: ${response.status} - ${response.data}`);
+    return { success: true, esp32Response: response.data };
+  } catch (error) {
+    console.error(`❌ Failed to communicate with ESP32: ${error.message}`);
+    return { success: false, error: error.message };
+  }
+}
+
 // Turn off Socket 1 relay
 app.get('/api/relay/relay1/off', async (req, res) => {
   try {
     console.log('🔴 [RELAY 1 OFF] User triggered shutdown');
     
+    // Send actual command to ESP32
+    const esp32Result = await sendRelayCommandToESP32(1, 'off');
+    
     // Emit relay status update to all connected clients
     io.emit('relay_status', {
       relay: 1,
       status: 'off',
-      message: 'Socket 1 has been safely disconnected',
+      message: esp32Result.success ? 'Socket 1 has been safely disconnected' : 'Failed to disconnect Socket 1',
+      esp32Connected: esp32Result.success,
       timestamp: new Date().toISOString()
     });
     
-    // In production, send HTTP command to ESP32 at http://192.168.6.203/relay1/off
-    // For now, we're logging and broadcasting
+    // Update cache
+    esp32LatestData.relay1 = 0;
     
-    res.json({ 
-      success: true, 
-      message: 'Socket 1 relay turned OFF',
-      relay: 1,
-      status: 'off'
-    });
+    if (esp32Result.success) {
+      res.json({ 
+        success: true, 
+        message: 'Socket 1 relay turned OFF',
+        relay: 1,
+        status: 'off'
+      });
+    } else {
+      res.status(500).json({ 
+        success: false, 
+        error: 'Failed to connect to ESP32: ' + esp32Result.error,
+        message: 'Could not reach ESP32 device. Is it connected to the network?'
+      });
+    }
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -434,22 +598,35 @@ app.get('/api/relay/relay2/off', async (req, res) => {
   try {
     console.log('🔴 [RELAY 2 OFF] User triggered shutdown');
     
+    // Send actual command to ESP32
+    const esp32Result = await sendRelayCommandToESP32(2, 'off');
+    
     // Emit relay status update to all connected clients
     io.emit('relay_status', {
       relay: 2,
       status: 'off',
-      message: 'Socket 2 has been safely disconnected',
+      message: esp32Result.success ? 'Socket 2 has been safely disconnected' : 'Failed to disconnect Socket 2',
+      esp32Connected: esp32Result.success,
       timestamp: new Date().toISOString()
     });
     
-    // In production, send HTTP command to ESP32 at http://192.168.6.203/relay2/off
+    // Update cache
+    esp32LatestData.relay2 = 0;
     
-    res.json({ 
-      success: true, 
-      message: 'Socket 2 relay turned OFF',
-      relay: 2,
-      status: 'off'
-    });
+    if (esp32Result.success) {
+      res.json({ 
+        success: true, 
+        message: 'Socket 2 relay turned OFF',
+        relay: 2,
+        status: 'off'
+      });
+    } else {
+      res.status(500).json({ 
+        success: false, 
+        error: 'Failed to connect to ESP32: ' + esp32Result.error,
+        message: 'Could not reach ESP32 device. Is it connected to the network?'
+      });
+    }
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -460,19 +637,34 @@ app.get('/api/relay/relay1/on', async (req, res) => {
   try {
     console.log('🟢 [RELAY 1 ON] User enabled socket');
     
+    // Send actual command to ESP32
+    const esp32Result = await sendRelayCommandToESP32(1, 'on');
+    
     io.emit('relay_status', {
       relay: 1,
       status: 'on',
-      message: 'Socket 1 has been re-enabled',
+      message: esp32Result.success ? 'Socket 1 has been re-enabled' : 'Failed to enable Socket 1',
+      esp32Connected: esp32Result.success,
       timestamp: new Date().toISOString()
     });
     
-    res.json({ 
-      success: true, 
-      message: 'Socket 1 relay turned ON',
-      relay: 1,
-      status: 'on'
-    });
+    // Update cache
+    esp32LatestData.relay1 = 1;
+    
+    if (esp32Result.success) {
+      res.json({ 
+        success: true, 
+        message: 'Socket 1 relay turned ON',
+        relay: 1,
+        status: 'on'
+      });
+    } else {
+      res.status(500).json({ 
+        success: false, 
+        error: 'Failed to connect to ESP32: ' + esp32Result.error,
+        message: 'Could not reach ESP32 device. Is it connected to the network?'
+      });
+    }
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -483,19 +675,34 @@ app.get('/api/relay/relay2/on', async (req, res) => {
   try {
     console.log('🟢 [RELAY 2 ON] User enabled socket');
     
+    // Send actual command to ESP32
+    const esp32Result = await sendRelayCommandToESP32(2, 'on');
+    
     io.emit('relay_status', {
       relay: 2,
       status: 'on',
-      message: 'Socket 2 has been re-enabled',
+      message: esp32Result.success ? 'Socket 2 has been re-enabled' : 'Failed to enable Socket 2',
+      esp32Connected: esp32Result.success,
       timestamp: new Date().toISOString()
     });
     
-    res.json({ 
-      success: true, 
-      message: 'Socket 2 relay turned ON',
-      relay: 2,
-      status: 'on'
-    });
+    // Update cache
+    esp32LatestData.relay2 = 1;
+    
+    if (esp32Result.success) {
+      res.json({ 
+        success: true, 
+        message: 'Socket 2 relay turned ON',
+        relay: 2,
+        status: 'on'
+      });
+    } else {
+      res.status(500).json({ 
+        success: false, 
+        error: 'Failed to connect to ESP32: ' + esp32Result.error,
+        message: 'Could not reach ESP32 device. Is it connected to the network?'
+      });
+    }
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -525,6 +732,31 @@ io.on('connection', (socket) => {
   socket.on('disconnect', () => {
     console.log('🔌 Dashboard Disconnected');
   });
+});
+
+// ============ DEBUG: FORCE ANOMALY ALERT (for Flutter testing) ============
+// Hit this in a browser: http://localhost:4000/api/debug/trigger-anomaly
+// You should see an alert in the app if Socket.io + handlers are wired.
+app.get('/api/debug/trigger-anomaly', (req, res) => {
+  try {
+    const payload = {
+      isAbnormal: true,
+      anomalySocket: 'Socket 1',
+      currentPower: 250,
+      threshold: 150,
+      dominantRelay: 1,
+      dominantPower: 250,
+      message: '⚠️ Test high usage on Socket 1 (debug endpoint)',
+      timestamp: new Date().toISOString(),
+      userId: 'debug',
+    };
+    io.emit('anomaly_alert', payload);
+    console.log('🧪 [DEBUG] Emitted test anomaly_alert:', payload);
+    res.json({ success: true, emitted: payload });
+  } catch (e) {
+    console.error('❌ Failed to emit debug anomaly:', e);
+    res.status(500).json({ success: false, error: e.message || String(e) });
+  }
 });
 
 // ============ MONTHLY BILLING RESET (CRON JOB) ============
