@@ -47,10 +47,19 @@ class RealtimeAnomalyService {
           if (data is! Map) return;
 
           final payload = Map<String, dynamic>.from(data);
-          await _handleAnomalyAlert(payload);
-
           if (_onAnomalyAlert != null) {
-            _onAnomalyAlert!(payload);
+            // Keep UI updates independent from notification side-effects.
+            try {
+              _onAnomalyAlert!(payload);
+            } catch (e) {
+              debugPrint('⚠️ Failed to run anomaly UI callback: $e');
+            }
+          }
+
+          try {
+            await _handleAnomalyAlert(payload);
+          } catch (e) {
+            debugPrint('⚠️ Failed to process anomaly side-effects: $e');
           }
         } catch (e) {
           debugPrint('❌ Failed to handle anomaly_alert payload: $e');
@@ -148,7 +157,7 @@ class RealtimeAnomalyService {
   static Future<bool> turnOffSocket(String socketName) async {
     try {
       final socketNum = socketName.contains('1') ? '1' : '2';
-      
+
       // Call ESP32 directly to turn off the relay
       bool success = false;
       if (socketNum == '1') {
@@ -159,13 +168,13 @@ class RealtimeAnomalyService {
 
       if (success) {
         debugPrint('✅ Socket $socketNum relay turned OFF via ESP32');
-        
+
         // Send confirmation notification
         await EnhancedNotificationService.sendRelayStatusNotification(
           isOn: false,
           reason: 'User disabled due to high power usage',
         );
-        
+
         return true;
       }
 
@@ -181,7 +190,7 @@ class RealtimeAnomalyService {
   static Future<bool> turnOnSocket(String socketName) async {
     try {
       final socketNum = socketName.contains('1') ? '1' : '2';
-      
+
       // Call ESP32 directly to turn on the relay
       bool success = false;
       if (socketNum == '1') {
@@ -192,12 +201,12 @@ class RealtimeAnomalyService {
 
       if (success) {
         debugPrint('🟢 Socket $socketNum relay turned ON via ESP32');
-        
+
         await EnhancedNotificationService.sendRelayStatusNotification(
           isOn: true,
           reason: 'User re-enabled socket',
         );
-        
+
         return true;
       }
 
@@ -212,7 +221,7 @@ class RealtimeAnomalyService {
   /// Get relay status from server
   static Future<Map<String, dynamic>> getRelayStatus() async {
     try {
-      final response = await ApiService.get('/api/relay/status');
+      final response = await ApiService.get('/relay/status');
       return {
         'relay1': response['relay1'] as int? ?? 0,
         'relay2': response['relay2'] as int? ?? 0,

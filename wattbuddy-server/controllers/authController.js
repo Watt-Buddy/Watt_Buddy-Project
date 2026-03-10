@@ -10,10 +10,10 @@ exports.registerUser = async (req, res) => {
   console.log("📥 Register API hit");
   console.log("📦 Body received:", req.body);
 
-  const { username, email, consumer_number, password } = req.body;
+  const { username, email, consumer_number, mobile_number, password } = req.body;
 
   // Validate input
-  if (!username || !email || !consumer_number || !password) {
+  if (!username || !email || !consumer_number || !mobile_number || !password) {
     console.warn("⚠️ Missing required fields");
     return res.status(400).json({ message: 'All fields are required' });
   }
@@ -47,8 +47,8 @@ exports.registerUser = async (req, res) => {
     console.log("💾 Inserting user into database...");
     await Promise.race([
       pool.query(
-        'INSERT INTO users (username, email, consumer_number, password) VALUES ($1, $2, $3, $4)',
-        [username, email, consumer_number, hashedPassword]
+        'INSERT INTO users (username, email, consumer_number, mobile_number, password) VALUES ($1, $2, $3, $4, $5)',
+        [username, email, consumer_number, mobile_number, hashedPassword]
       ),
       new Promise((_, reject) =>
         setTimeout(() => reject(new Error('Database timeout while inserting user')), 10000)
@@ -159,7 +159,8 @@ exports.loginUser = async (req, res) => {
         id: user.id,
         username: user.username,
         email: user.email,
-        consumer_number: user.consumer_number
+        consumer_number: user.consumer_number,
+        mobile_number: user.mobile_number
       }
     });
 

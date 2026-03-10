@@ -6,7 +6,7 @@ class BillPredictionService {
   static Future<Map<String, dynamic>?> getPredictedBill(String userId) async {
     try {
       final data = await ApiService.get(
-        '/api/predictions/bill/$userId',
+        '/predictions/bill/$userId',
       );
 
       if (data['success'] == true && data['prediction'] != null) {
@@ -33,7 +33,7 @@ class BillPredictionService {
   ) async {
     try {
       final data = await ApiService.get(
-        '/api/predictions/30days/$userId',
+        '/predictions/30days/$userId',
       );
 
       if (data['success'] == true && data['predictions'] != null) {
@@ -55,13 +55,14 @@ class BillPredictionService {
       final billData = await getPredictedBill(userId);
       if (billData != null) {
         final predictedBill = billData['predictedBill'] as double;
-        
+
         if (predictedBill > threshold) {
           // Send alert notification
           await EnhancedNotificationService.sendHighBillWarning(
             predictedBill: predictedBill,
             threshold: threshold,
-            recommendation: 'Reduce consumption in peak hours to bring bill down.',
+            recommendation:
+                'Reduce consumption in peak hours to bring bill down.',
           );
           return true;
         }
@@ -77,7 +78,7 @@ class BillPredictionService {
   static Future<Map<String, dynamic>?> getBillBreakdown(String userId) async {
     try {
       final data = await ApiService.get(
-        '/api/predictions/breakdown/$userId',
+        '/predictions/breakdown/$userId',
       );
 
       if (data['success'] == true && data['breakdown'] != null) {
@@ -98,7 +99,7 @@ class BillPredictionService {
   static Future<List<String>?> getSavingsRecommendations(String userId) async {
     try {
       final data = await ApiService.get(
-        '/api/predictions/recommendations/$userId',
+        '/predictions/recommendations/$userId',
       );
 
       if (data['success'] == true && data['recommendations'] != null) {
@@ -133,7 +134,8 @@ class BillPredictionService {
 
       await EnhancedNotificationService.sendBillPredictionAlert(
         title: title,
-        body: 'If you continue consuming at current rate, next month\'s bill will be ₹${predictedBill.toStringAsFixed(2)}',
+        body:
+            'If you continue consuming at current rate, next month\'s bill will be ₹${predictedBill.toStringAsFixed(2)}',
         predictedBill: predictedBill,
         currentBill: currentBill,
         riskLevel: riskLevel,
@@ -178,7 +180,7 @@ class BillPredictionService {
   }) async {
     try {
       final date = DateTime.now().toString().split(' ')[0];
-      
+
       await EnhancedNotificationService.sendDailySummary(
         dailyEnergy: '${dailyEnergy.toStringAsFixed(2)} kWh',
         peakPower: '${peakPower.toStringAsFixed(0)} W',

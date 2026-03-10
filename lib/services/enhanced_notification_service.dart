@@ -120,8 +120,7 @@ class EnhancedNotificationService {
       styleInformation: BigTextStyleInformation(''),
     );
 
-    const DarwinNotificationDetails iOSDetails =
-        DarwinNotificationDetails(
+    const DarwinNotificationDetails iOSDetails = DarwinNotificationDetails(
       presentAlert: true,
       presentBadge: true,
       presentSound: true,
@@ -188,8 +187,7 @@ class EnhancedNotificationService {
       styleInformation: BigTextStyleInformation(''),
     );
 
-    const DarwinNotificationDetails iOSDetails =
-        DarwinNotificationDetails(
+    const DarwinNotificationDetails iOSDetails = DarwinNotificationDetails(
       presentAlert: true,
       presentBadge: true,
       presentSound: true,
@@ -205,8 +203,7 @@ class EnhancedNotificationService {
       title,
       displayBody,
       notificationDetails,
-      payload:
-          'bill_prediction:${predictedBill.toStringAsFixed(2)}:$riskLevel',
+      payload: 'bill_prediction:${predictedBill.toStringAsFixed(2)}:$riskLevel',
     );
 
     // Log to server
@@ -230,7 +227,8 @@ class EnhancedNotificationService {
     String body =
         'Your next month bill is predicted to be ₹${predictedBill.toStringAsFixed(2)} (+$percentageIncrease%)';
 
-    recommendation ??= 'Consider shifting load to off-peak hours to reduce consumption.';
+    recommendation ??=
+        'Consider shifting load to off-peak hours to reduce consumption.';
 
     await sendBillPredictionAlert(
       title: title,
@@ -253,7 +251,8 @@ class EnhancedNotificationService {
     required String date,
   }) async {
     String title = '📊 Daily Energy Summary';
-    String body = '$date\nEnergy: $dailyEnergy | Peak: $peakPower | Avg: $averagePower';
+    String body =
+        '$date\nEnergy: $dailyEnergy | Peak: $peakPower | Avg: $averagePower';
 
     if (anomalyCount > 0) {
       title = '⚠️ Summary: $anomalyCount anomalies detected';
@@ -343,8 +342,7 @@ class EnhancedNotificationService {
       styleInformation: BigTextStyleInformation(''),
     );
 
-    const DarwinNotificationDetails iOSDetails =
-        DarwinNotificationDetails(
+    const DarwinNotificationDetails iOSDetails = DarwinNotificationDetails(
       presentAlert: true,
       presentBadge: true,
       presentSound: true,
@@ -376,7 +374,7 @@ class EnhancedNotificationService {
   }) async {
     try {
       await ApiService.post(
-        '/api/notifications/log-anomaly',
+        '/notifications/log-anomaly',
         {
           'anomalyType': anomalyType,
           'voltage': voltage,
@@ -398,7 +396,7 @@ class EnhancedNotificationService {
   }) async {
     try {
       await ApiService.post(
-        '/api/notifications/log-bill-prediction',
+        '/notifications/log-bill-prediction',
         {
           'predictedBill': predictedBill,
           'currentBill': currentBill,
@@ -427,8 +425,8 @@ class EnhancedNotificationService {
 
   /// Request iOS notification permissions
   static Future<bool> requestIOSPermissions() async {
-    final iOSPlugin = _notificationsPlugin
-        .resolvePlatformSpecificImplementation<
+    final iOSPlugin =
+        _notificationsPlugin.resolvePlatformSpecificImplementation<
             IOSFlutterLocalNotificationsPlugin>();
 
     if (iOSPlugin != null) {
@@ -444,8 +442,8 @@ class EnhancedNotificationService {
 
   /// Request Android notification permissions (Android 13+)
   static Future<bool> requestAndroidPermissions() async {
-    final androidPlugin = _notificationsPlugin
-        .resolvePlatformSpecificImplementation<
+    final androidPlugin =
+        _notificationsPlugin.resolvePlatformSpecificImplementation<
             AndroidFlutterLocalNotificationsPlugin>();
 
     if (androidPlugin != null) {

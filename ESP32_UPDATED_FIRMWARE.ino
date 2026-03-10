@@ -5,8 +5,12 @@
 #include <HTTPClient.h>  // ADD THIS FOR RELIABLE HTTP POSTING
 
 /* ============ CONFIGURATION ============ */
-const char* ssid = "realme C31";
-const char* pass = "anjaah@123";
+const char* WIFI_PASS = "wattbuddy123";
+const char* WIFI_SSIDS[] = {
+  "wattbuddy",             // Windows Mobile Hotspot (primary)
+  "OPPO F15 2"             // Phone hotspot (backup)
+};
+const int WIFI_SSIDS_COUNT = sizeof(WIFI_SSIDS) / sizeof(WIFI_SSIDS[0]);
 
 // (Optional) Static IP configuration - currently unused (DHCP mode)
 // IPAddress local_IP(10, 148, 3, 100);    // Example static IP on same subnet as PC (10.148.3.x)
@@ -18,8 +22,8 @@ const char* pass = "anjaah@123";
 #define ACS_PIN 34
 #define ZMPT_PIN 35
 
-// Backend server (your PC) IP - from ipconfig: 10.148.3.49
-const char* SERVER_IP = "10.185.178.50";
+// Backend server (your PC) IP - Windows Mobile Hotspot: 192.168.137.1
+const char* SERVER_IP = "192.168.137.1";
 const int SERVER_PORT = 4000;
 
 float Vrms = 0.0, Irms = 0.0, Power = 0.0, energy_kWh = 0.0;
@@ -38,6 +42,8 @@ int dominantRelay = 0;          // 0 = unknown/both, 1 or 2 = relay number
 float dominantRelayPowerW = 0;  // approximate watts drawn by that relay
 unsigned long lastDiagnosisTime = 0;
 bool isDiagnosing = false;
+int activeWifiIndex = -1;
+unsigned long lastReconnectAttempt = 0;
 
 /* ============ PRECISION SENSOR LOGIC (UNTOUCHED) ============ */
 void calculateSensors() {
@@ -142,6 +148,75 @@ void checkNetworkDiagnostics() {
   Serial.print(SERVER_IP);
   Serial.print(":");
   Serial.println(SERVER_PORT);
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.print("   Gateway: ");
+    Serial.println(WiFi.gatewayIP());
+    Serial.print("   Subnet: ");
+    Serial.println(WiFi.subnetMask());
+  }
+}
+
+bool connectToWiFi() {
+  WiFi.mode(WIFI_STA);
+
+  for (int i = 0; i < WIFI_SSIDS_COUNT; i++) {
+    Serial.print("📡 Trying WiFi SSID: ");
+    Serial.println(WIFI_SSIDS[i]);
+
+    WiFi.disconnect(true);
+    WiFi.config(INADDR_NONE, INADDR_NONE, INADDR_NONE);
+    delay(300);
+    WiFi.begin(WIFI_SSIDS[i], WIFI_PASS);
+
+    int attempts = 0;
+    while (WiFi.status() != WL_CONNECTED && attempts < 20) {
+      delay(500);
+      Serial.print(".");
+      attempts++;
+    }
+    Serial.println();
+
+    if (WiFi.status() == WL_CONNECTED) {
+      activeWifiIndex = i;
+      Serial.println("✅ WiFi Connected!");
+      Serial.print("   SSID: ");
+      Serial.println(WIFI_SSIDS[i]);
+      Serial.print("   IP: ");
+      Serial.println(WiFi.localIP());
+      Serial.print("   Gateway: ");
+      Serial.println(WiFi.gatewayIP());
+      Serial.print("   RSSI: ");
+      Serial.print(WiFi.RSSI());
+      Serial.println(" dBm");
+      return true;
+    }
+  }
+
+  activeWifiIndex = -1;
+  Serial.println("❌ WiFi connection failed for all configured SSIDs");
+  checkNetworkDiagnostics();
+  return false;
+}
+
+bool canReachBackendTcp() {
+  WiFiClient probe;
+  probe.setTimeout(2000);
+
+  Serial.print("🔎 TCP precheck to ");
+  Serial.print(SERVER_IP);
+  Serial.print(":");
+  Serial.println(SERVER_PORT);
+
+  const bool connected = probe.connect(SERVER_IP, SERVER_PORT);
+  if (connected) {
+    Serial.println("✅ TCP precheck passed");
+    probe.stop();
+    return true;
+  }
+
+  Serial.println("❌ TCP precheck failed (peer unreachable or blocked)");
+  Serial.println("   Hint: disable hotspot AP/client isolation, keep both devices on same 2.4GHz LAN");
+  return false;
 }
 
 /* ============ SERVER POST (UPDATED: USES HTTPClient FOR RELIABILITY) ============ */
@@ -149,6 +224,11 @@ void postData() {
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("❌ WiFi not connected, skipping POST");
     checkNetworkDiagnostics();  // show reason for lack of connection
+    return;
+  }
+
+  if (!canReachBackendTcp()) {
+    checkNetworkDiagnostics();
     return;
   }
 
@@ -183,14 +263,16 @@ void postData() {
     
     int httpCode = http.POST(json);
     
-    if (httpCode == 200) {
+    if (httpCode >= 200 && httpCode < 300) {
       String response = http.getString();
       Serial.print("✅ POST SUCCESS (Code: ");
       Serial.print(httpCode);
       Serial.print(") Response: ");
       Serial.println(response);
-    } else if (httpCode == -1) {
-      Serial.println("❌ POST FAILED: Connection timeout or server unreachable");
+    } else if (httpCode < 0) {
+      Serial.println("❌ POST FAILED: HTTP client/network error");
+      Serial.print("   Error: ");
+      Serial.println(http.errorToString(httpCode));
       Serial.print("   Server: ");
       Serial.print(SERVER_IP);
       Serial.print(":");
@@ -230,47 +312,14 @@ void setup() {
   digitalWrite(RELAY2_PIN, LOW);
 
   Serial.println("📡 Connecting to WiFi...");
-  WiFi.mode(WIFI_STA);
+  connectToWiFi();
 
-  // Use DHCP for IP assignment (simpler and avoids mismatch with backend PC)
-  WiFi.begin(ssid, pass);
-  
-  int attempts = 0;
-  while (WiFi.status() != WL_CONNECTED && attempts < 20) { 
-    delay(500); 
-    Serial.print("."); 
-    attempts++;
-  }
-  
-  Serial.println();
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.println("✅ WiFi Connected!");
-    Serial.print("IP: ");
-    Serial.println(WiFi.localIP());
+  // Initialize mDNS for wattbuddy.local hostname resolution
+  if (!MDNS.begin("wattbuddy")) {
+    Serial.println("❌ mDNS initialization failed");
   } else {
-    Serial.println("❌ WiFi Connection Failed!");
-    checkNetworkDiagnostics();
-
-    // retry once using DHCP instead of static IP
-    Serial.println("⚠️ Retrying connection with DHCP (no static IP)");
-    WiFi.disconnect(true);           // clear previous settings
-    WiFi.config(INADDR_NONE, INADDR_NONE, INADDR_NONE);
-    WiFi.begin(ssid, pass);
-    attempts = 0;
-    while (WiFi.status() != WL_CONNECTED && attempts < 20) {
-      delay(500);
-      Serial.print("+");
-      attempts++;
-    }
-    Serial.println();
-    if (WiFi.status() == WL_CONNECTED) {
-      Serial.println("✅ Connected via DHCP!");
-      Serial.print("IP: ");
-      Serial.println(WiFi.localIP());
-    } else {
-      Serial.println("❌ Still unable to connect after DHCP retry");
-      checkNetworkDiagnostics();
-    }
+    Serial.println("✅ mDNS initialized - accessible at: http://wattbuddy.local");
+    MDNS.addService("http", "tcp", 80);
   }
 
   // NEW ROUTE: Provisioning endpoint for Flutter app
@@ -288,25 +337,25 @@ void setup() {
   server.on("/relay1/on", []() { 
     digitalWrite(RELAY1_PIN, LOW); 
     Serial.printf("🟢 HTTP /relay1/on -> RELAY1_PIN=%d (digitalRead=%d)\n", RELAY1_PIN, digitalRead(RELAY1_PIN));
-    server.send(200, "text/plain", "1"); 
+    server.send(200, "application/json", "{\"status\":\"ok\",\"relay\":1,\"state\":1}"); 
   });
   
   server.on("/relay1/off", []() { 
     digitalWrite(RELAY1_PIN, HIGH); 
     Serial.printf("🔴 HTTP /relay1/off -> RELAY1_PIN=%d (digitalRead=%d)\n", RELAY1_PIN, digitalRead(RELAY1_PIN));
-    server.send(200, "text/plain", "0"); 
+    server.send(200, "application/json", "{\"status\":\"ok\",\"relay\":1,\"state\":0}"); 
   });
   
   server.on("/relay2/on", []() { 
     digitalWrite(RELAY2_PIN, LOW); 
     Serial.printf("🟢 HTTP /relay2/on -> RELAY2_PIN=%d (digitalRead=%d)\n", RELAY2_PIN, digitalRead(RELAY2_PIN));
-    server.send(200, "text/plain", "1"); 
+    server.send(200, "application/json", "{\"status\":\"ok\",\"relay\":2,\"state\":1}"); 
   });
   
   server.on("/relay2/off", []() { 
     digitalWrite(RELAY2_PIN, HIGH); 
     Serial.printf("🔴 HTTP /relay2/off -> RELAY2_PIN=%d (digitalRead=%d)\n", RELAY2_PIN, digitalRead(RELAY2_PIN));
-    server.send(200, "text/plain", "0"); 
+    server.send(200, "application/json", "{\"status\":\"ok\",\"relay\":2,\"state\":0}"); 
   });
 
   // Debug endpoint: confirm what the ESP32 thinks relay states are.
@@ -315,6 +364,15 @@ void setup() {
     const int r1 = (digitalRead(RELAY1_PIN) == LOW) ? 1 : 0;
     const int r2 = (digitalRead(RELAY2_PIN) == LOW) ? 1 : 0;
     String json = "{\"relay1\":" + String(r1) + ",\"relay2\":" + String(r2) + "}";
+    server.send(200, "application/json", json);
+  });
+
+  // Health check endpoint - responds fast for connectivity verification
+  server.on("/health", HTTP_GET, []() {
+    String json = "{\"status\":\"ok\",\"device\":\"WattBuddy ESP32\",\"uptime_ms\":" + String(millis()) + 
+                  ",\"power_w\":" + String(Power, 1) + 
+                  ",\"voltage_v\":" + String(Vrms, 1) + 
+                  ",\"current_a\":" + String(Irms, 3) + "}";
     server.send(200, "application/json", json);
   });
 
@@ -329,26 +387,38 @@ void setup() {
 
 /* ============ LOOP ============ */
 void loop() {
+  // PRIORITY 1: Handle incoming client requests (relay control, status checks)
+  // Do this FIRST and FREQUENTLY to prevent timeouts
   server.handleClient();
   
+  // PRIORITY 2: Read sensors every 1 second
   if (millis() - lastReadingTime > 1000) {
     calculateSensors();
     lastReadingTime = millis();
     Serial.printf("V: %.1f | I: %.3f | P: %.1fW | Total: %.4f kWh | User: %s\n", Vrms, Irms, Power, energy_kWh, currentUserId.c_str());
   }
 
+  // PRIORITY 3: Keep WiFi alive (check every 15 seconds)
+  if (WiFi.status() != WL_CONNECTED && millis() - lastReconnectAttempt > 15000) {
+    lastReconnectAttempt = millis();
+    Serial.println("⚠️ WiFi lost, attempting reconnect...");
+    connectToWiFi();
+  }
+  
+  // PRIORITY 4: Save energy to flash memory every 5 minutes
   if (millis() - lastSaveTime > 300000) {
     preferences.putFloat("energy", energy_kWh);
     lastSaveTime = millis();
     Serial.println("💾 Energy data backed up to flash memory.");
   }
 
+  // PRIORITY 5: POST data to server every 5 seconds (lowest priority - can be delayed)
   if (millis() - lastServerPostTime > 5000) {
     postData();
     lastServerPostTime = millis();
   }
 
-  // Run auto-diagnosis when power is abnormally high
+  // PRIORITY 6: Run auto-diagnosis when power is abnormally high
   if (!isDiagnosing && Power > ANOMALY_THRESHOLD_W && (millis() - lastDiagnosisTime) > 60000) {
     runAnomalyDiagnosis();
   }

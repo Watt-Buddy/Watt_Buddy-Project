@@ -24,14 +24,16 @@ class _BillPredictionScreenState extends State<BillPredictionScreen> {
   double _lastMonthUsage = 0.0;
   double _predictedMonthlyUsage = 0.0;
   double _predictedMonthlyBill = 0.0;
-  double _electricityRate = 10.0; 
+  double _lastMonthBill = 0.0;
+  double _electricityRate = 10.0;
   double _baseCharge = 50.0;
-  
+
   String _riskLevel = 'Normal';
   Color _riskColor = Colors.green;
 
-  // History for Line Chart
-  List<FlSpot> _lineDataPoints = [];
+  // Daily usage bar data for current month (1..today)
+  List<BarChartGroupData> _dailyBarGroups = [];
+  double _maxDailyUsageKwh = 1.0;
 
   @override
   void initState() {
@@ -86,28 +88,66 @@ class _BillPredictionScreenState extends State<BillPredictionScreen> {
 
     try {
       setState(() => _errorMessage = null);
-      // 1. Fetch Billing Data from SQL View (More accurate server-side calculation)
-      final billResponse = await http.get(
-        Uri.parse('${ApiService.baseUrl}/billing/current/$_userId'),
-      ).timeout(ApiService.connectionTimeout);
+      // 1) Fetch current billing from DB-backed endpoint
+      final billResponse = await http
+          .get(
+            Uri.parse('${ApiService.baseUrl}/billing/current/$_userId'),
+          )
+          .timeout(ApiService.connectionTimeout);
 
       if (billResponse.statusCode == 200) {
         final billData = jsonDecode(billResponse.body);
-        
+
         if (billData['success'] && billData['billing'] != null) {
+          final now = DateTime.now();
+          final daysElapsed = now.day;
+          final totalDaysInMonth = DateTime(now.year, now.month + 1, 0).day;
+
+          final usageToDate = double.tryParse(
+                billData['billing']['total_units_kwh'].toString(),
+              ) ??
+              0.0;
+          final currentBill = double.tryParse(
+                billData['billing']['slab_bill_rs'].toString(),
+              ) ??
+              0.0;
+
+          final rate = double.tryParse(
+                billData['billing']['rate_per_kwh']?.toString() ?? '',
+              ) ??
+              _electricityRate;
+          final baseCharge = double.tryParse(
+                billData['billing']['base_charge_rs']?.toString() ?? '',
+              ) ??
+              _baseCharge;
+
+          final avgDailyUsage =
+              daysElapsed > 0 ? usageToDate / daysElapsed : 0.0;
+          final predictedUsage = avgDailyUsage * totalDaysInMonth;
+
+          // Prefer tariff-based projection when tariff fields are available,
+          // otherwise scale current bill by day ratio.
+          double projectedBill;
+          if (billData['billing']['rate_per_kwh'] != null ||
+              billData['billing']['base_charge_rs'] != null) {
+            projectedBill = baseCharge + (predictedUsage * rate);
+          } else {
+            projectedBill = daysElapsed > 0
+                ? currentBill * (totalDaysInMonth / daysElapsed)
+                : currentBill;
+          }
+
           setState(() {
-            // Use double.tryParse to safely convert String/int/double values
-            _currentMonthUsage = double.tryParse(
-              billData['billing']['total_units_kwh'].toString()
-            ) ?? 0.0;
-            _predictedMonthlyBill = double.tryParse(
-              billData['billing']['slab_bill_rs'].toString()
-            ) ?? 0.0;
-            _predictedMonthlyUsage = _currentMonthUsage;
+            _currentMonthUsage = usageToDate;
+            _predictedMonthlyUsage = predictedUsage;
+            _predictedMonthlyBill = projectedBill;
+            _electricityRate = rate;
+            _baseCharge = baseCharge;
             _riskLevel = 'Normal';
             _riskColor = Colors.green;
           });
-          debugPrint('✅ Billing data loaded: Usage=${_currentMonthUsage}kWh, Bill=₹${_predictedMonthlyBill}');
+          debugPrint(
+              '✅ Billing data loaded: Usage=${_currentMonthUsage}kWh, CurrentBill=₹$currentBill, Projected=₹$_predictedMonthlyBill');
         } else {
           setState(() {
             _errorMessage =
@@ -120,17 +160,35 @@ class _BillPredictionScreenState extends State<BillPredictionScreen> {
         await _fetchSummaryDataFallback();
       }
 
-      // 2. Fetch Daily History for the Bar Chart
+      // 2) Fetch current-month daily usage (DB) for bar chart
       await _fetchDailyHistory();
 
-      // 3. Check usage summary for anomaly demo (strong spike detection)
+      // Keep displayed current-month usage aligned with Dashboard goal progress.
+      await _syncCurrentUsageWithGoalProgress();
+
+      // 3) Fetch previous month bill amount from DB history
+      await _fetchLastMonthBill();
+
+      // 4) Check usage summary for anomaly demo (strong spike detection)
       try {
-        final summaryResp = await http.get(
-          Uri.parse('${ApiService.baseUrl}/usage/summary/$_userId'),
-        ).timeout(ApiService.connectionTimeout);
+        final summaryResp = await http
+            .get(
+              Uri.parse('${ApiService.baseUrl}/usage/summary/$_userId'),
+            )
+            .timeout(ApiService.connectionTimeout);
 
         if (summaryResp.statusCode == 200) {
           final summary = jsonDecode(summaryResp.body);
+          setState(() {
+            _lastMonthUsage =
+                double.tryParse(summary['lastMonthKwh']?.toString() ?? '0') ??
+                    _lastMonthUsage;
+            if (_lastMonthBill <= 0 && _lastMonthUsage > 0) {
+              _lastMonthBill =
+                  _baseCharge + (_lastMonthUsage * _electricityRate);
+            }
+          });
+
           if (summary['isAbnormal'] == true) {
             final socketName = summary['anomalySocket'] ?? 'Unknown Socket';
             // Show dialog on next frame to avoid calling during build
@@ -151,6 +209,8 @@ class _BillPredictionScreenState extends State<BillPredictionScreen> {
       // Fallback if billing fetch fails
       try {
         await _fetchSummaryDataFallback();
+        await _fetchDailyHistory();
+        await _fetchLastMonthBill();
       } catch (e2) {
         debugPrint('❌ Fallback also failed: $e2');
       }
@@ -162,53 +222,55 @@ class _BillPredictionScreenState extends State<BillPredictionScreen> {
   // Fallback method if billing view is not available
   Future<void> _fetchSummaryDataFallback() async {
     if (_userId == null) return;
-    
+
     try {
-      final response = await http.get(
-        Uri.parse('${ApiService.baseUrl}/usage/summary/$_userId'),
-      ).timeout(ApiService.connectionTimeout);
+      final response = await http
+          .get(
+            Uri.parse('${ApiService.baseUrl}/usage/summary/$_userId'),
+          )
+          .timeout(ApiService.connectionTimeout);
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
-        
+
         setState(() {
           // Use double.tryParse for safe numeric conversions
-          _currentMonthUsage = double.tryParse(
-            data['currentMonthKwh'].toString()
-          ) ?? 0.0;
-          _lastMonthUsage = double.tryParse(
-            data['lastMonthKwh'].toString()
-          ) ?? 0.0;
+          _currentMonthUsage =
+              double.tryParse(data['currentMonthKwh'].toString()) ?? 0.0;
+          _lastMonthUsage =
+              double.tryParse(data['lastMonthKwh'].toString()) ?? 0.0;
 
           int daysPassed = (data['daysElapsed'] as int?) ?? 1;
-          double dailyRate = _currentMonthUsage / (daysPassed > 0 ? daysPassed : 1);
+          double dailyRate =
+              _currentMonthUsage / (daysPassed > 0 ? daysPassed : 1);
           _predictedMonthlyUsage = dailyRate * 30;
-          _predictedMonthlyBill = _baseCharge + (_predictedMonthlyUsage * _electricityRate);
+          _predictedMonthlyBill =
+              _baseCharge + (_predictedMonthlyUsage * _electricityRate);
+          _lastMonthBill = _baseCharge + (_lastMonthUsage * _electricityRate);
 
           // Check for abnormal usage flag
           if (data['isAbnormal'] == true) {
             final socketName = data['anomalySocket'] ?? 'Unknown Socket';
             _riskLevel = '⚠️ CRITICAL: ABNORMAL LOAD';
             _riskColor = Colors.red;
-            
+
             // Show high-visibility alert dialog
             WidgetsBinding.instance.addPostFrameCallback((_) {
               _showAnomalyAlert(socketName);
             });
-            
-            final currentPower = double.tryParse(
-              data['currentPower'].toString()
-            ) ?? 0.0;
-            final avgPower = double.tryParse(
-              data['historicalAvgPower'].toString()
-            ) ?? 0.0;
-            
-            debugPrint('🚨 ABNORMAL USAGE: Current ${currentPower}W vs Avg ${avgPower}W | Source: $socketName');
+
+            final currentPower =
+                double.tryParse(data['currentPower'].toString()) ?? 0.0;
+            final avgPower =
+                double.tryParse(data['historicalAvgPower'].toString()) ?? 0.0;
+
+            debugPrint(
+                '🚨 ABNORMAL USAGE: Current ${currentPower}W vs Avg ${avgPower}W | Source: $socketName');
           } else {
-            double historicalAvg = double.tryParse(
-              data['historicalAvgPower'].toString()
-            ) ?? 0.0;
-            if (historicalAvg > 0 && (dailyRate / 24) > (historicalAvg / 1000) * 1.5) {
+            double historicalAvg =
+                double.tryParse(data['historicalAvgPower'].toString()) ?? 0.0;
+            if (historicalAvg > 0 &&
+                (dailyRate / 24) > (historicalAvg / 1000) * 1.5) {
               _riskLevel = '⚠️ High Usage Detected';
               _riskColor = Colors.orange;
             } else {
@@ -216,13 +278,107 @@ class _BillPredictionScreenState extends State<BillPredictionScreen> {
               _riskColor = Colors.green;
             }
           }
-          
-          debugPrint('✅ Summary data loaded: Usage=${_currentMonthUsage}kWh, Risk=$_riskLevel');
+
+          debugPrint(
+              '✅ Summary data loaded: Usage=${_currentMonthUsage}kWh, Risk=$_riskLevel');
         });
       }
     } catch (e) {
       debugPrint('❌ Fallback Summary Error: $e');
     }
+  }
+
+  Future<void> _syncCurrentUsageWithGoalProgress() async {
+    if (_userId == null) return;
+
+    try {
+      final progressRes = await ApiService.getGoalProgress(int.parse(_userId!));
+      if (progressRes['success'] != true || progressRes['progress'] == null) {
+        return;
+      }
+
+      final progress = progressRes['progress'] as Map<String, dynamic>;
+      final unifiedUsage = double.tryParse(
+              progress['monthly']?['currentUsage']?.toString() ?? '0') ??
+          _currentMonthUsage;
+
+      if (unifiedUsage < 0) return;
+
+      final now = DateTime.now();
+      final daysElapsed = now.day;
+      final totalDaysInMonth = DateTime(now.year, now.month + 1, 0).day;
+      final avgDailyUsage = daysElapsed > 0 ? unifiedUsage / daysElapsed : 0.0;
+      final predictedUsage = avgDailyUsage * totalDaysInMonth;
+      final projectedBill = _baseCharge + (predictedUsage * _electricityRate);
+
+      setState(() {
+        _currentMonthUsage = unifiedUsage;
+        _predictedMonthlyUsage = predictedUsage;
+        _predictedMonthlyBill = projectedBill;
+      });
+    } catch (e) {
+      debugPrint('⚠️ Goal progress usage sync failed: $e');
+    }
+  }
+
+  Future<void> _fetchLastMonthBill() async {
+    if (_userId == null) return;
+
+    try {
+      final response = await http
+          .get(
+            Uri.parse('${ApiService.baseUrl}/billing/history/$_userId'),
+          )
+          .timeout(ApiService.connectionTimeout);
+
+      if (response.statusCode == 200) {
+        final Map<String, dynamic> data = jsonDecode(response.body);
+        final List<dynamic> bills = (data['bills'] as List<dynamic>? ?? []);
+        final String currentPeriod = _periodLabel(DateTime.now());
+
+        Map<String, dynamic>? previousMonthEntry;
+        for (final entry in bills) {
+          if ((entry['period']?.toString() ?? '') != currentPeriod) {
+            previousMonthEntry = Map<String, dynamic>.from(entry as Map);
+            break;
+          }
+        }
+
+        if (previousMonthEntry != null) {
+          final amount = double.tryParse(
+                previousMonthEntry['amount'].toString(),
+              ) ??
+              0.0;
+          setState(() => _lastMonthBill = amount);
+          return;
+        }
+      }
+    } catch (e) {
+      debugPrint('⚠️ Last month bill fetch failed: $e');
+    }
+
+    // Fallback: derive from last month kWh + current tariff
+    setState(() {
+      _lastMonthBill = _baseCharge + (_lastMonthUsage * _electricityRate);
+    });
+  }
+
+  String _periodLabel(DateTime date) {
+    const months = [
+      'Jan',
+      'Feb',
+      'Mar',
+      'Apr',
+      'May',
+      'Jun',
+      'Jul',
+      'Aug',
+      'Sep',
+      'Oct',
+      'Nov',
+      'Dec'
+    ];
+    return '${months[date.month - 1]} ${date.year}';
   }
 
   // Interactive alert dialog for abnormal usage with relay control
@@ -252,7 +408,8 @@ class _BillPredictionScreenState extends State<BillPredictionScreen> {
               const SizedBox(height: 10),
               Text(
                 "Would you like to cut power to $socketName?",
-                style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w500),
+                style: const TextStyle(
+                    color: Colors.white, fontWeight: FontWeight.w500),
               ),
               const SizedBox(height: 15),
               Container(
@@ -263,7 +420,7 @@ class _BillPredictionScreenState extends State<BillPredictionScreen> {
                   border: Border.all(color: Colors.orange, width: 1),
                 ),
                 child: const Text(
-                  "💡 Faculty Demo: This demonstrates real-time anomaly detection and device control via your Flutter app.",
+                  "",
                   style: TextStyle(color: Colors.orange, fontSize: 12),
                 ),
               ),
@@ -278,7 +435,8 @@ class _BillPredictionScreenState extends State<BillPredictionScreen> {
             },
             child: const Text(
               "NEGLECT",
-              style: TextStyle(color: Colors.white70, fontWeight: FontWeight.bold),
+              style:
+                  TextStyle(color: Colors.white70, fontWeight: FontWeight.bold),
             ),
           ),
           ElevatedButton(
@@ -292,7 +450,8 @@ class _BillPredictionScreenState extends State<BillPredictionScreen> {
             },
             child: const Text(
               "TURN OFF SWITCH",
-              style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+              style:
+                  TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
             ),
           ),
         ],
@@ -304,7 +463,7 @@ class _BillPredictionScreenState extends State<BillPredictionScreen> {
   Future<void> _turnOffSocket(String socketName) async {
     try {
       late String endpoint;
-      
+
       if (socketName == "Socket 1") {
         endpoint = '/api/relay/relay1/off';
       } else if (socketName == "Socket 2") {
@@ -312,9 +471,13 @@ class _BillPredictionScreenState extends State<BillPredictionScreen> {
       } else if (socketName == "Both Sockets") {
         // Turn off both relays via backend
         final host = ApiService.baseUrl.replaceFirst('/api', '');
-        await http.get(Uri.parse('$host/api/relay/relay1/off')).timeout(ApiService.connectionTimeout);
-        await http.get(Uri.parse('$host/api/relay/relay2/off')).timeout(ApiService.connectionTimeout);
-        
+        await http
+            .get(Uri.parse('$host/api/relay/relay1/off'))
+            .timeout(ApiService.connectionTimeout);
+        await http
+            .get(Uri.parse('$host/api/relay/relay2/off'))
+            .timeout(ApiService.connectionTimeout);
+
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text('✅ Both sockets turned OFF to prevent damage'),
@@ -329,9 +492,11 @@ class _BillPredictionScreenState extends State<BillPredictionScreen> {
       }
 
       final host = ApiService.baseUrl.replaceFirst('/api', '');
-      final response = await http.get(
-        Uri.parse('$host$endpoint'),
-      ).timeout(ApiService.connectionTimeout);
+      final response = await http
+          .get(
+            Uri.parse('$host$endpoint'),
+          )
+          .timeout(ApiService.connectionTimeout);
 
       if (response.statusCode == 200) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -357,90 +522,155 @@ class _BillPredictionScreenState extends State<BillPredictionScreen> {
 
   Future<void> _fetchDailyHistory() async {
     if (_userId == null) return;
+    final int today = DateTime.now().day;
+
+    final Map<int, double> dayToKwh = {
+      for (int day = 1; day <= today; day++) day: 0.0,
+    };
+
     try {
-      final response = await http.get(
-        Uri.parse('${ApiService.baseUrl}/usage/daily-history/$_userId'),
-      ).timeout(ApiService.connectionTimeout);
+      final response = await http
+          .get(
+            Uri.parse('${ApiService.baseUrl}/usage/daily-history/$_userId'),
+          )
+          .timeout(ApiService.connectionTimeout);
 
       if (response.statusCode == 200) {
         final List<dynamic> history = jsonDecode(response.body);
-        List<FlSpot> spots = [];
 
-        for (var entry in history) {
-          final day = (entry['day'] ?? 0).toDouble();
-          final kwh = (entry['kwh'] ?? 0.0).toDouble();
-          spots.add(FlSpot(day, kwh));
+        for (final raw in history) {
+          final entry = Map<String, dynamic>.from(raw as Map);
+          final day = int.tryParse(entry['day'].toString()) ?? 0;
+          final kwh = double.tryParse(entry['kwh'].toString()) ?? 0.0;
+          if (day >= 1 && day <= today) {
+            dayToKwh[day] = kwh;
+          }
         }
-        setState(() => _lineDataPoints = spots);
       }
+
+      final List<BarChartGroupData> groups = [];
+      double maxDaily = 0.0;
+
+      dayToKwh.forEach((day, kwh) {
+        if (kwh > maxDaily) maxDaily = kwh;
+        groups.add(
+          BarChartGroupData(
+            x: day,
+            barRods: [
+              BarChartRodData(
+                toY: kwh,
+                color: Colors.cyanAccent,
+                width: 7,
+                borderRadius: BorderRadius.circular(3),
+              ),
+            ],
+          ),
+        );
+      });
+
+      setState(() {
+        _dailyBarGroups = groups;
+        _maxDailyUsageKwh = maxDaily > 0 ? maxDaily * 1.2 : 1.0;
+      });
     } catch (e) {
       debugPrint("Line chart fetch error: $e");
+      // Still render month-to-date empty bars so chart UI is visible.
+      final groups = List<BarChartGroupData>.generate(today, (index) {
+        final day = index + 1;
+        return BarChartGroupData(
+          x: day,
+          barRods: [
+            BarChartRodData(
+              toY: 0,
+              color: Colors.cyanAccent,
+              width: 7,
+              borderRadius: BorderRadius.circular(3),
+            ),
+          ],
+        );
+      });
+
+      setState(() {
+        _dailyBarGroups = groups;
+        _maxDailyUsageKwh = 1.0;
+      });
     }
   }
 
-  double _calculateBill(double usage) => _baseCharge + (usage * _electricityRate);
+  double _calculateBill(double usage) =>
+      _baseCharge + (usage * _electricityRate);
 
   @override
   Widget build(BuildContext context) {
     return ResponsiveScaffold(
       currentRoute: '/bill-prediction',
-      body: _isLoading 
-        ? const Center(child: CircularProgressIndicator()) 
-        : (_userId == null)
-            ? Center(
-                child: Padding(
-                  padding: const EdgeInsets.all(20),
-                  child: Text(
-                    _errorMessage ?? 'Please log in to continue.',
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(color: Colors.white70, fontSize: 16),
-                  ),
-                ),
-              )
-            : SingleChildScrollView(
-            padding: const EdgeInsets.all(20),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text('💰 Bill Predictor', 
-                  style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: Colors.white)),
-                const SizedBox(height: 20),
-                Text(
-                  'User: ${_userId ?? '-'}',
-                  style: const TextStyle(color: Colors.white38, fontSize: 12),
-                ),
-                const SizedBox(height: 10),
-                if (_errorMessage != null) ...[
-                  Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.all(14),
-                    decoration: BoxDecoration(
-                      color: Colors.red.withOpacity(0.12),
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(color: Colors.red.withOpacity(0.35)),
-                    ),
+      body: _isLoading
+          ? const Center(child: CircularProgressIndicator())
+          : (_userId == null)
+              ? Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(20),
                     child: Text(
-                      _errorMessage!,
-                      style: const TextStyle(color: Colors.white70),
+                      _errorMessage ?? 'Please log in to continue.',
+                      textAlign: TextAlign.center,
+                      style:
+                          const TextStyle(color: Colors.white70, fontSize: 16),
                     ),
                   ),
-                  const SizedBox(height: 16),
-                ],
-                _buildMainPredictionCard(),
-                const SizedBox(height: 20),
-                _buildMonthlyComparisonRow(),
-                const SizedBox(height: 30),
-                const Text('📊 Daily Consumption History (kWh)', 
-                  style: TextStyle(color: Colors.white70, fontWeight: FontWeight.bold)),
-                const SizedBox(height: 15),
-                _buildUsageLineChart(),
-                const SizedBox(height: 30),
-                _buildAnomalyStatusCard(),
-                const SizedBox(height: 20),
-                _buildInfoSection(),
-              ],
-            ),
-          ),
+                )
+              : SingleChildScrollView(
+                  padding: const EdgeInsets.all(20),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text('💰 Bill Predictor',
+                          style: TextStyle(
+                              fontSize: 28,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.white)),
+                      const SizedBox(height: 20),
+                      Text(
+                        'User: ${_userId ?? '-'}',
+                        style: const TextStyle(
+                            color: Colors.white38, fontSize: 12),
+                      ),
+                      const SizedBox(height: 10),
+                      if (_errorMessage != null) ...[
+                        Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.all(14),
+                          decoration: BoxDecoration(
+                            color: Colors.red.withOpacity(0.12),
+                            borderRadius: BorderRadius.circular(12),
+                            border:
+                                Border.all(color: Colors.red.withOpacity(0.35)),
+                          ),
+                          child: Text(
+                            _errorMessage!,
+                            style: const TextStyle(color: Colors.white70),
+                          ),
+                        ),
+                        const SizedBox(height: 16),
+                      ],
+                      _buildMainPredictionCard(),
+                      const SizedBox(height: 20),
+                      _buildMonthlyComparisonRow(),
+                      const SizedBox(height: 30),
+                      const Text('📊 Daily Usage (Current Month)',
+                          style: TextStyle(
+                              color: Colors.white70,
+                              fontWeight: FontWeight.bold)),
+                      const SizedBox(height: 15),
+                      _buildDailyUsageBarChart(),
+                      const SizedBox(height: 30),
+                      _buildLastMonthBillCard(),
+                      const SizedBox(height: 20),
+                      _buildAnomalyStatusCard(),
+                      const SizedBox(height: 20),
+                      _buildInfoSection(),
+                    ],
+                  ),
+                ),
     );
   }
 
@@ -450,16 +680,22 @@ class _BillPredictionScreenState extends State<BillPredictionScreen> {
       padding: const EdgeInsets.all(25),
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(20),
-        gradient: const LinearGradient(colors: [Color(0xFF1A1A3A), Color(0xFF0A0A2A)]),
+        gradient: const LinearGradient(
+            colors: [Color(0xFF1A1A3A), Color(0xFF0A0A2A)]),
         border: Border.all(color: Colors.white10),
       ),
       child: Column(
         children: [
-          const Text('Predicted Bill for this month', style: TextStyle(color: Colors.white70)),
-          Text('₹${_predictedMonthlyBill.toStringAsFixed(2)}', 
-            style: const TextStyle(fontSize: 42, fontWeight: FontWeight.bold, color: Colors.white)),
-          Text('Expected Usage: ${_predictedMonthlyUsage.toStringAsFixed(1)} kWh', 
-            style: const TextStyle(color: Colors.cyanAccent)),
+          const Text('Predicted Bill for this month',
+              style: TextStyle(color: Colors.white70)),
+          Text('₹${_predictedMonthlyBill.toStringAsFixed(2)}',
+              style: const TextStyle(
+                  fontSize: 42,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.white)),
+          Text(
+              'Expected Usage: ${_predictedMonthlyUsage.toStringAsFixed(1)} kWh',
+              style: const TextStyle(color: Colors.cyanAccent)),
         ],
       ),
     );
@@ -468,9 +704,13 @@ class _BillPredictionScreenState extends State<BillPredictionScreen> {
   Widget _buildMonthlyComparisonRow() {
     return Row(
       children: [
-        Expanded(child: _statCard("This Month", "${_currentMonthUsage.toStringAsFixed(1)} kWh", Colors.blue)),
+        Expanded(
+            child: _statCard("This Month",
+                "${_currentMonthUsage.toStringAsFixed(1)} kWh", Colors.blue)),
         const SizedBox(width: 15),
-        Expanded(child: _statCard("Last Month", "${_lastMonthUsage.toStringAsFixed(1)} kWh", Colors.orange)),
+        Expanded(
+            child: _statCard("Last Month Bill",
+                "₹${_lastMonthBill.toStringAsFixed(2)}", Colors.orange)),
       ],
     );
   }
@@ -485,15 +725,18 @@ class _BillPredictionScreenState extends State<BillPredictionScreen> {
       ),
       child: Column(
         children: [
-          Text(label, style: const TextStyle(color: Colors.white60, fontSize: 12)),
+          Text(label,
+              style: const TextStyle(color: Colors.white60, fontSize: 12)),
           const SizedBox(height: 5),
-          Text(value, style: TextStyle(color: color, fontSize: 18, fontWeight: FontWeight.bold)),
+          Text(value,
+              style: TextStyle(
+                  color: color, fontSize: 18, fontWeight: FontWeight.bold)),
         ],
       ),
     );
   }
 
-  Widget _buildUsageLineChart() {
+  Widget _buildDailyUsageBarChart() {
     return Container(
       height: 250,
       padding: const EdgeInsets.all(15),
@@ -502,95 +745,102 @@ class _BillPredictionScreenState extends State<BillPredictionScreen> {
         borderRadius: BorderRadius.circular(15),
         border: Border.all(color: Colors.white10),
       ),
-      child: _lineDataPoints.isEmpty 
-        ? const Center(
-            child: Text(
-              "No usage history yet.\nKeep the ESP32 running for a few minutes.",
-              textAlign: TextAlign.center,
-              style: TextStyle(color: Colors.white54),
-            ),
-          )
-        : LineChart(
-            LineChartData(
-              minY: 0,
-              maxY: _lineDataPoints.isEmpty ? 10 : (_lineDataPoints.map((s) => s.y).reduce((a, b) => a > b ? a : b) * 1.2),
-              gridData: FlGridData(
-                show: true,
-                drawVerticalLine: false,
-                horizontalInterval: _lineDataPoints.isEmpty ? 5 : null,
-                getDrawingHorizontalLine: (value) => FlLine(
-                  color: Colors.white.withOpacity(0.1),
-                  strokeWidth: 1,
-                ),
+      child: _dailyBarGroups.isEmpty
+          ? const Center(
+              child: Text(
+                "No daily usage data yet for this month.",
+                textAlign: TextAlign.center,
+                style: TextStyle(color: Colors.white54),
               ),
-              titlesData: FlTitlesData(
-                leftTitles: AxisTitles(
-                  sideTitles: SideTitles(
-                    showTitles: true, 
-                    reservedSize: 40,
-                    interval: _lineDataPoints.isEmpty ? 5 : null,
-                    getTitlesWidget: (value, meta) {
-                      if (value % 5 != 0 && _lineDataPoints.isNotEmpty) return const SizedBox.shrink();
-                      return Text(
-                        value.toInt().toString(), 
-                        style: const TextStyle(color: Colors.white54, fontSize: 10)
-                      );
-                    }
-                  )
-                ),
-                bottomTitles: AxisTitles(
-                  sideTitles: SideTitles(
-                    showTitles: true,
-                    reservedSize: 30,
-                    getTitlesWidget: (value, meta) {
-                      // Show day number (1, 2, 3...) instead of "D1", "D2"
-                      if (value.toInt() % 5 != 0 && _lineDataPoints.length > 10) return const SizedBox.shrink();
-                      return Text(
-                        value.toInt().toString(), 
-                        style: const TextStyle(color: Colors.white54, fontSize: 10)
-                      );
-                    }
-                  )
-                ),
-                rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-                topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-              ),
-              borderData: FlBorderData(show: false),
-              lineTouchData: LineTouchData(
-                enabled: true,
-                touchTooltipData: LineTouchTooltipData(
-                  getTooltipItems: (spots) {
-                    return spots.map((spot) {
-                      return LineTooltipItem(
-                        'Day ${spot.x.toInt()}: ${spot.y.toStringAsFixed(2)} kWh',
-                        const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-                      );
-                    }).toList();
-                  },
-                ),
-              ),
-              lineBarsData: [
-                LineChartBarData(
-                  spots: _lineDataPoints,
-                  isCurved: true,
-                  color: Colors.cyanAccent,
-                  barWidth: 3,
-                  dotData: const FlDotData(show: false),
-                  belowBarData: BarAreaData(
-                    show: true,
-                    gradient: LinearGradient(
-                      begin: Alignment.topCenter,
-                      end: Alignment.bottomCenter,
-                      colors: [
-                        Colors.cyanAccent.withOpacity(0.3),
-                        Colors.cyanAccent.withOpacity(0.05),
-                      ],
-                    ),
+            )
+          : BarChart(
+              BarChartData(
+                alignment: BarChartAlignment.spaceAround,
+                maxY: _maxDailyUsageKwh,
+                minY: 0,
+                gridData: FlGridData(
+                  show: true,
+                  drawVerticalLine: false,
+                  horizontalInterval: _maxDailyUsageKwh <= 5 ? 1 : null,
+                  getDrawingHorizontalLine: (value) => FlLine(
+                    color: Colors.white.withOpacity(0.1),
+                    strokeWidth: 1,
                   ),
                 ),
-              ],
+                titlesData: FlTitlesData(
+                  leftTitles: AxisTitles(
+                      sideTitles: SideTitles(
+                          showTitles: true,
+                          reservedSize: 40,
+                          getTitlesWidget: (value, meta) {
+                            if (value < 0) return const SizedBox.shrink();
+                            return Text(value.toStringAsFixed(1),
+                                style: const TextStyle(
+                                    color: Colors.white54, fontSize: 10));
+                          })),
+                  bottomTitles: AxisTitles(
+                      sideTitles: SideTitles(
+                          showTitles: true,
+                          reservedSize: 30,
+                          getTitlesWidget: (value, meta) {
+                            if (value.toInt() % 5 != 0 &&
+                                _dailyBarGroups.length > 12) {
+                              return const SizedBox.shrink();
+                            }
+                            return Text(value.toInt().toString(),
+                                style: const TextStyle(
+                                    color: Colors.white54, fontSize: 10));
+                          })),
+                  rightTitles: const AxisTitles(
+                      sideTitles: SideTitles(showTitles: false)),
+                  topTitles: const AxisTitles(
+                      sideTitles: SideTitles(showTitles: false)),
+                ),
+                borderData: FlBorderData(show: false),
+                barTouchData: BarTouchData(
+                  enabled: true,
+                  touchTooltipData: BarTouchTooltipData(
+                    getTooltipItem: (group, groupIndex, rod, rodIndex) {
+                      return BarTooltipItem(
+                        'Day ${group.x}: ${rod.toY.toStringAsFixed(2)} kWh',
+                        const TextStyle(
+                            color: Colors.white, fontWeight: FontWeight.bold),
+                      );
+                    },
+                  ),
+                ),
+                barGroups: _dailyBarGroups,
+              ),
+            ),
+    );
+  }
+
+  Widget _buildLastMonthBillCard() {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(15),
+      decoration: BoxDecoration(
+        color: Colors.white.withOpacity(0.05),
+        borderRadius: BorderRadius.circular(15),
+        border: Border.all(color: Colors.white10),
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          const Text(
+            'Last Month Bill',
+            style: TextStyle(color: Colors.white70, fontSize: 14),
+          ),
+          Text(
+            '₹${_lastMonthBill.toStringAsFixed(2)}',
+            style: const TextStyle(
+              color: Colors.orangeAccent,
+              fontSize: 20,
+              fontWeight: FontWeight.bold,
             ),
           ),
+        ],
+      ),
     );
   }
 
@@ -598,16 +848,15 @@ class _BillPredictionScreenState extends State<BillPredictionScreen> {
     return Container(
       padding: const EdgeInsets.all(15),
       decoration: BoxDecoration(
-        color: _riskColor.withOpacity(0.1),
-        border: Border.all(color: _riskColor.withOpacity(0.3)),
-        borderRadius: BorderRadius.circular(15)
-      ),
+          color: _riskColor.withOpacity(0.1),
+          border: Border.all(color: _riskColor.withOpacity(0.3)),
+          borderRadius: BorderRadius.circular(15)),
       child: Row(
         children: [
           Icon(Icons.insights, color: _riskColor),
           const SizedBox(width: 15),
-          Text("Pattern Check: $_riskLevel", 
-            style: TextStyle(color: _riskColor, fontWeight: FontWeight.bold)),
+          Text("Pattern Check: $_riskLevel",
+              style: TextStyle(color: _riskColor, fontWeight: FontWeight.bold)),
         ],
       ),
     );
@@ -616,10 +865,13 @@ class _BillPredictionScreenState extends State<BillPredictionScreen> {
   Widget _buildInfoSection() {
     return Container(
       padding: const EdgeInsets.all(15),
-      decoration: BoxDecoration(color: Colors.white.withOpacity(0.03), borderRadius: BorderRadius.circular(15)),
+      decoration: BoxDecoration(
+          color: Colors.white.withOpacity(0.03),
+          borderRadius: BorderRadius.circular(15)),
       child: const Text(
         "Note: Predictions are based on your usage history from the database. Data resets automatically on the 1st of every month.",
-        style: TextStyle(color: Colors.white54, fontSize: 12, fontStyle: FontStyle.italic),
+        style: TextStyle(
+            color: Colors.white54, fontSize: 12, fontStyle: FontStyle.italic),
       ),
     );
   }

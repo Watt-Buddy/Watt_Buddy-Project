@@ -1,5 +1,7 @@
 // 🧠 FEATURE 4: ML Prediction Service
 const db = require('../db');
+const { spawn } = require('child_process');
+const path = require('path');
 
 class MLPredictionService {
   static ML_ENGINE_URL = process.env.ML_ENGINE_URL || 'http://localhost:5000';
@@ -165,7 +167,7 @@ class MLPredictionService {
       }
 
       const windowSize = options.windowSize || 100;
-      const zThreshold = options.zThreshold || 2.5;
+      const lag = options.lag || 5;
 
       const result = await db.query(
         `SELECT power_consumption, recorded_at
@@ -184,25 +186,117 @@ class MLPredictionService {
       // Oldest → newest
       const rowsAsc = [...result.rows].reverse();
       const powers = rowsAsc.map(r => Number(r.power_consumption) || 0);
+      const rfResult = await this.runRandomForestLatestAnomaly(userId, powers, {
+        lag,
+        n_estimators: options.nEstimators || 200,
+      });
+
+      return {
+        isAnomaly: Boolean(rfResult.isAnomaly),
+        latestPower: Number(rfResult.latestPower ?? powers[powers.length - 1] ?? 0),
+        mean: Number(rfResult.meanPower ?? 0),
+        stdDev: Number(rfResult.stdPower ?? 0),
+        zScore: Number(rfResult.residualZScore ?? 0),
+        predictedPower: Number(rfResult.predictedPower ?? 0),
+        residual: Number(rfResult.residual ?? 0),
+        thresholdPower: Number(rfResult.powerThreshold ?? rfResult.residualThreshold ?? 0),
+        model: rfResult.model || 'RandomForestRegressor',
+        timestamp: rowsAsc[rowsAsc.length - 1].recorded_at,
+      };
+    } catch (error) {
+      console.error('❌ Error in detectLatestAnomaly (RF), using fallback:', error);
+      return this.detectLatestAnomalyZScoreFallback(userId, options);
+    }
+  }
+
+  static async runRandomForestLatestAnomaly(userId, powers, options = {}) {
+    return new Promise((resolve, reject) => {
+      const pythonProcess = spawn('python', [
+        path.join(__dirname, '../../wattbudyy-ml/ml_engine.py'),
+      ]);
+
+      let output = '';
+      let errorOutput = '';
+
+      const payload = {
+        user_id: String(userId),
+        action: 'detect_latest_rf',
+        power_data: powers,
+        lag: options.lag || 5,
+        n_estimators: options.n_estimators || 200,
+      };
+
+      pythonProcess.stdin.write(JSON.stringify(payload));
+      pythonProcess.stdin.end();
+
+      pythonProcess.stdout.on('data', (data) => {
+        output += data.toString();
+      });
+
+      pythonProcess.stderr.on('data', (data) => {
+        errorOutput += data.toString();
+      });
+
+      pythonProcess.on('close', (code) => {
+        if (code !== 0) {
+          reject(new Error(errorOutput || 'Random Forest ML engine failed'));
+          return;
+        }
+
+        try {
+          const parsed = JSON.parse(output);
+          if (parsed.error) {
+            reject(new Error(parsed.error));
+            return;
+          }
+          resolve(parsed);
+        } catch (parseError) {
+          reject(new Error(`Failed to parse Random Forest result: ${parseError.message}`));
+        }
+      });
+
+      setTimeout(() => {
+        pythonProcess.kill();
+        reject(new Error('Random Forest ML engine timeout'));
+      }, 15000);
+    });
+  }
+
+  static async detectLatestAnomalyZScoreFallback(userId, options = {}) {
+    try {
+      const windowSize = options.windowSize || 100;
+      const zThreshold = options.zThreshold || 2.5;
+
+      const result = await db.query(
+        `SELECT power_consumption, recorded_at
+         FROM energy_readings
+         WHERE user_id = $1
+         ORDER BY recorded_at DESC
+         LIMIT $2`,
+        [userId, windowSize]
+      );
+
+      if (result.rows.length < 10) {
+        return { isAnomaly: false, reason: 'insufficient_history' };
+      }
+
+      const rowsAsc = [...result.rows].reverse();
+      const powers = rowsAsc.map(r => Number(r.power_consumption) || 0);
 
       const latestPower = powers[powers.length - 1];
       const history = powers.slice(0, -1);
-
-      const mean =
-        history.reduce((sum, v) => sum + v, 0) / history.length;
-      const variance =
-        history.reduce((sum, v) => sum + Math.pow(v - mean, 2), 0) /
-        history.length;
+      const mean = history.reduce((sum, v) => sum + v, 0) / history.length;
+      const variance = history.reduce((sum, v) => sum + Math.pow(v - mean, 2), 0) / history.length;
       const stdDev = Math.sqrt(variance);
 
       if (!isFinite(stdDev) || stdDev < 1e-3) {
-        // Too flat to compute a meaningful Z-score
         return {
           isAnomaly: false,
           latestPower,
           mean,
           stdDev,
           reason: 'low_variance',
+          model: 'zscore_fallback',
         };
       }
 
@@ -215,11 +309,12 @@ class MLPredictionService {
         mean,
         stdDev,
         zScore,
+        thresholdPower: mean + (zThreshold * stdDev),
+        model: 'zscore_fallback',
         timestamp: rowsAsc[rowsAsc.length - 1].recorded_at,
       };
     } catch (error) {
-      console.error('❌ Error in detectLatestAnomaly:', error);
-      return { isAnomaly: false, error: error.message };
+      return { isAnomaly: false, error: error.message, model: 'zscore_fallback' };
     }
   }
 

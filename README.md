@@ -116,6 +116,9 @@ flutter pub get
 flutter run -d windows    # Windows
 flutter run -d chrome     # Web browser
 flutter run -d android    # Android device
+
+# For a real Android phone, point app to your PC LAN IP
+flutter run -d android --dart-define=API_BASE_URL=http://192.168.184.49:4000/api
 ```
 
 ### ESP32 Firmware

@@ -2,6 +2,7 @@ import json
 import pandas as pd
 import numpy as np
 from sklearn.ensemble import IsolationForest
+from sklearn.ensemble import RandomForestRegressor
 from sklearn.preprocessing import StandardScaler
 from sklearn.cluster import KMeans
 import joblib
@@ -277,6 +278,88 @@ def process_request(request_data):
             'pattern': pattern,
             'suggestions': suggestions,
         }
+
+    elif action == 'detect_latest_rf':
+        power_data = request_data.get('power_data', [])
+        lag = int(request_data.get('lag', 5))
+        n_estimators = int(request_data.get('n_estimators', 200))
+
+        try:
+            values = np.array(power_data, dtype=float)
+
+            if values.size < (lag + 12):
+                return {
+                    'isAnomaly': False,
+                    'reason': 'insufficient_history',
+                    'required': lag + 12,
+                    'received': int(values.size)
+                }
+
+            history = values[:-1]
+            latest = float(values[-1])
+
+            X = []
+            y = []
+            for i in range(lag, len(history)):
+                X.append(history[i - lag:i])
+                y.append(history[i])
+
+            if len(X) < 10:
+                return {
+                    'isAnomaly': False,
+                    'reason': 'insufficient_training_windows',
+                    'received_windows': len(X)
+                }
+
+            X = np.array(X)
+            y = np.array(y)
+
+            model = RandomForestRegressor(
+                n_estimators=n_estimators,
+                random_state=42,
+                n_jobs=-1
+            )
+            model.fit(X, y)
+
+            train_preds = model.predict(X)
+            residuals = np.abs(y - train_preds)
+
+            residual_mean = float(np.mean(residuals))
+            residual_std = float(np.std(residuals))
+            residual_p95 = float(np.percentile(residuals, 95))
+            residual_threshold = max(residual_mean + (3 * residual_std), residual_p95)
+
+            latest_features = history[-lag:].reshape(1, -1)
+            predicted_latest = float(model.predict(latest_features)[0])
+            latest_residual = abs(latest - predicted_latest)
+            power_threshold = predicted_latest + residual_threshold
+
+            denom = residual_std if residual_std > 1e-6 else 1.0
+            residual_z_score = float((latest_residual - residual_mean) / denom)
+            is_anomaly = bool(latest_residual > residual_threshold)
+
+            return {
+                'isAnomaly': is_anomaly,
+                'model': 'RandomForestRegressor',
+                'latestPower': latest,
+                'predictedPower': predicted_latest,
+                'residual': float(latest_residual),
+                'residualThreshold': float(residual_threshold),
+                'powerThreshold': float(power_threshold),
+                'residualZScore': float(residual_z_score),
+                'residualMean': residual_mean,
+                'residualStd': residual_std,
+                'meanPower': float(np.mean(history)),
+                'stdPower': float(np.std(history)),
+                'windowSize': int(values.size),
+                'lag': int(lag)
+            }
+        except Exception as e:
+            return {
+                'isAnomaly': False,
+                'error': str(e),
+                'model': 'RandomForestRegressor'
+            }
     
     elif action == 'train':
         # Retrain model with new data

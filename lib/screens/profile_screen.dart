@@ -14,10 +14,14 @@ class ProfileScreen extends StatefulWidget {
 class _ProfileScreenState extends State<ProfileScreen> {
   final GlobalKey<FormState> _formKey = GlobalKey<FormState>();
 
+  // User ID for storage isolation
+  String? _userId;
+
   // Account info
   String username = 'Not set';
   String email = 'Not set';
   String consumerNumber = 'Not set';
+  String mobileNumber = 'Not set';
 
   // Editable fields
   final TextEditingController _fullNameController = TextEditingController();
@@ -28,7 +32,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
   void initState() {
     super.initState();
     _loadUserData();
-    _loadProfileDetails();
   }
 
   Future<void> _loadUserData() async {
@@ -38,16 +41,30 @@ class _ProfileScreenState extends State<ProfileScreen> {
     if (storedUser != null) {
       final user = jsonDecode(storedUser);
       setState(() {
+        _userId = user['id']?.toString();
         username = user['username'] ?? 'Not set';
         email = user['email'] ?? 'Not set';
-        consumerNumber = user['consumer'] ?? 'Not set';
+        consumerNumber = user['consumer_number'] ?? 'Not set';
+        mobileNumber = user['mobile_number'] ?? 'Not set';
       });
+
+      // Pre-fill editable phone field from registered account data.
+      if (_phoneController.text.trim().isEmpty &&
+          mobileNumber != 'Not set' &&
+          mobileNumber.trim().isNotEmpty) {
+        _phoneController.text = mobileNumber;
+      }
+
+      // Load profile details after userId is set
+      await _loadProfileDetails();
     }
   }
 
   Future<void> _loadProfileDetails() async {
+    if (_userId == null) return;
+
     final prefs = await SharedPreferences.getInstance();
-    final storedProfile = prefs.getString('profileDetails');
+    final storedProfile = prefs.getString('profileDetails_$_userId');
 
     if (storedProfile != null) {
       final data = jsonDecode(storedProfile);
@@ -59,6 +76,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
   Future<void> _updateProfile() async {
     if (!_formKey.currentState!.validate()) return;
+    if (_userId == null) return;
 
     final prefs = await SharedPreferences.getInstance();
     final data = {
@@ -67,7 +85,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
       'address': _addressController.text.trim(),
     };
 
-    await prefs.setString('profileDetails', jsonEncode(data));
+    await prefs.setString('profileDetails_$_userId', jsonEncode(data));
 
     if (mounted) {
       showDialog(
@@ -150,6 +168,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     _readOnlyField("Email", email),
                     const SizedBox(height: 15),
                     _readOnlyField("Consumer Number", consumerNumber),
+                    const SizedBox(height: 15),
+                    _readOnlyField("Phone Number", mobileNumber),
 
                     const SizedBox(height: 30),
                     Divider(color: Colors.white24),
@@ -192,7 +212,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       child: ElevatedButton(
                         onPressed: _updateProfile,
                         style: ElevatedButton.styleFrom(
-                          backgroundColor: const Color.fromARGB(255, 236, 238, 240),
+                          backgroundColor:
+                              const Color.fromARGB(255, 236, 238, 240),
                           padding: const EdgeInsets.symmetric(vertical: 14),
                           shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(10),

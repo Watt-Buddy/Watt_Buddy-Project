@@ -147,8 +147,8 @@ router.post('/relay/toggle', async (req, res) => {
 
     // Send command to ESP32 (direct IP, firmware endpoints are /relay1/on etc)
     const esp32URL = newState
-      ? `http://10.185.178.50/relay${relayNumber}/on`
-      : `http://10.185.178.50/relay${relayNumber}/off`;
+      ? `http://192.168.184.203/relay${relayNumber}/on`
+      : `http://192.168.184.203/relay${relayNumber}/off`;
     
     try {
       const esp32Response = await axios.get(esp32URL, { timeout: 3000 });

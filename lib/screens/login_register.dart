@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
-import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:convert';
 
@@ -26,6 +25,7 @@ class _LoginRegisterScreenState extends State<LoginRegisterScreen> {
   final TextEditingController regEmail = TextEditingController();
   final TextEditingController regUser = TextEditingController();
   final TextEditingController regConsumer = TextEditingController();
+  final TextEditingController regPhone = TextEditingController();
   final TextEditingController regPass = TextEditingController();
 
   bool rememberMe = false;
@@ -39,6 +39,7 @@ class _LoginRegisterScreenState extends State<LoginRegisterScreen> {
     regEmail.dispose();
     regUser.dispose();
     regConsumer.dispose();
+    regPhone.dispose();
     regPass.dispose();
     super.dispose();
   }
@@ -58,6 +59,7 @@ class _LoginRegisterScreenState extends State<LoginRegisterScreen> {
     if (regEmail.text.isEmpty ||
         regUser.text.isEmpty ||
         regConsumer.text.isEmpty ||
+        regPhone.text.isEmpty ||
         regPass.text.isEmpty) {
       _showSnack("Please fill all fields");
       return;
@@ -69,6 +71,7 @@ class _LoginRegisterScreenState extends State<LoginRegisterScreen> {
       username: regUser.text.trim(),
       email: regEmail.text.trim(),
       consumerNumber: regConsumer.text.trim(),
+      phoneNumber: regPhone.text.trim(),
       password: regPass.text.trim(),
     );
 
@@ -103,15 +106,15 @@ class _LoginRegisterScreenState extends State<LoginRegisterScreen> {
       // Get the user ID from SharedPreferences to provision hardware
       final prefs = await SharedPreferences.getInstance();
       final userJson = prefs.getString('wattBuddyUser');
-      
+
       if (userJson != null) {
         final user = jsonDecode(userJson);
         final String userId = user['id'].toString();
-        
+
         // Trigger automatic hardware provisioning
         await provisionHardware(userId);
       }
-      
+
       Navigator.pushReplacementNamed(context, '/dashboard');
     } else {
       _showSnack("Invalid credentials");
@@ -148,7 +151,8 @@ class _LoginRegisterScreenState extends State<LoginRegisterScreen> {
           Container(
             decoration: BoxDecoration(
               image: DecorationImage(
-                image: const AssetImage('assets/images/Gemini_Generated_Image_m8bsn8m8bsn8m8bs.png'),
+                image: const AssetImage(
+                    'assets/images/Gemini_Generated_Image_m8bsn8m8bsn8m8bs.png'),
                 fit: BoxFit.cover,
                 opacity: 0.3,
               ),
@@ -205,7 +209,7 @@ class _LoginRegisterScreenState extends State<LoginRegisterScreen> {
                     const SizedBox(height: 20),
 
                     SizedBox(
-                      height: 420,
+                      height: 470,
                       child: PageView(
                         controller: pageController,
                         physics: const NeverScrollableScrollPhysics(),
@@ -254,6 +258,7 @@ class _LoginRegisterScreenState extends State<LoginRegisterScreen> {
         _inputField(regEmail, "Email", FontAwesomeIcons.envelope),
         _inputField(regUser, "Username", FontAwesomeIcons.user),
         _inputField(regConsumer, "Consumer Number", FontAwesomeIcons.hashtag),
+        _inputField(regPhone, "Phone Number", FontAwesomeIcons.phone),
         _inputField(
           regPass,
           "Password",

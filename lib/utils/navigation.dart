@@ -218,9 +218,8 @@ class NavigationHelper {
                 ),
               )
             : null,
-        onTap: isActive
-            ? null
-            : () => NavigationHelper.navigateTo(context, route),
+        onTap:
+            isActive ? null : () => NavigationHelper.navigateTo(context, route),
         contentPadding: const EdgeInsets.symmetric(horizontal: 10),
         minLeadingWidth: 30,
       ),

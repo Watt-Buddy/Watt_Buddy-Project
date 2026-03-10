@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:async';
+import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:fl_chart/fl_chart.dart';
 
@@ -29,6 +30,46 @@ class _DevicesScreenState extends State<DevicesScreen> {
   // (removed local alert tracking vars; always alert when over threshold)
   bool _isAlertDialogOpen = false;
 
+  // Per-socket alert muting (5 minutes after dismissal or turn-off)
+  Set<String> _mutedSockets = {}; // e.g., {'Socket 1', 'Socket 2'}
+  static const Duration _socketMuteDuration = Duration(minutes: 5);
+  Map<String, DateTime> _socketMuteTime =
+      {}; // Track when each socket was muted
+
+  /// Check if a specific socket is muted
+  bool _isSocketMuted(String socketName) {
+    if (!_mutedSockets.contains(socketName)) return false;
+    final muteTime = _socketMuteTime[socketName];
+    if (muteTime == null) return false;
+    final timeSinceMute = DateTime.now().difference(muteTime);
+    if (timeSinceMute >= _socketMuteDuration) {
+      // Mute period expired, unmute the socket
+      _mutedSockets.remove(socketName);
+      _socketMuteTime.remove(socketName);
+      return false;
+    }
+    return true;
+  }
+
+  /// Mute a specific socket for 5 minutes
+  void _muteSocket(String socketName) {
+    if (mounted) {
+      setState(() {
+        _mutedSockets.add(socketName);
+        _socketMuteTime[socketName] = DateTime.now();
+      });
+    }
+  }
+
+  /// Get remaining mute time for a socket in seconds
+  int _getRemainingMuteSeconds(String socketName) {
+    final muteTime = _socketMuteTime[socketName];
+    if (muteTime == null) return 0;
+    final timeSinceMute = DateTime.now().difference(muteTime);
+    final remaining = _socketMuteDuration.inSeconds - timeSinceMute.inSeconds;
+    return remaining > 0 ? remaining : 0;
+  }
+
   // Anomaly detection state
   Map<String, dynamic>? _lastAnomalyData;
   bool _isAnomalyServiceConnected = false;
@@ -56,7 +97,7 @@ class _DevicesScreenState extends State<DevicesScreen> {
   double timerCount = 0;
 
   // ESP32 Direct IP - Must match your ESP32 IP shown in Serial Monitor
-  final String esp32Ip = "10.185.178.203";
+  final String esp32Ip = "192.168.137.154";
 
   @override
   void initState() {
@@ -64,6 +105,7 @@ class _DevicesScreenState extends State<DevicesScreen> {
     _loadDeviceNames();
     _loadRelayStatus();
     _loadGoalsAndConsumption();
+    _provisionEsp32ForLoggedInUser();
     _initializeAnomalyDetection();
     // Refresh every 3 seconds to avoid spamming the ESP32 while it samples AC
     _refreshTimer = Timer.periodic(const Duration(seconds: 3), (_) {
@@ -71,6 +113,27 @@ class _DevicesScreenState extends State<DevicesScreen> {
         _loadRelayStatus();
       }
     });
+  }
+
+  Future<void> _provisionEsp32ForLoggedInUser() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final storedUser = prefs.getString('wattBuddyUser');
+      if (storedUser == null) return;
+
+      final user = jsonDecode(storedUser);
+      final dynamic id = user['id'];
+      if (id == null) return;
+
+      final ok = await ApiService.setESP32User(id.toString());
+      if (ok) {
+        debugPrint('✅ Devices provisioned ESP32 user: $id');
+      } else {
+        debugPrint('⚠️ Devices could not provision ESP32 user');
+      }
+    } catch (e) {
+      debugPrint('⚠️ ESP32 user provisioning skipped: $e');
+    }
   }
 
   // Initialize real-time anomaly detection
@@ -109,6 +172,13 @@ class _DevicesScreenState extends State<DevicesScreen> {
     required double threshold,
     required String message,
   }) {
+    // Check if this specific socket is muted
+    if (_isSocketMuted(socketName)) {
+      final remaining = _getRemainingMuteSeconds(socketName);
+      debugPrint('🚨 $socketName muted. Alert suppressed for ${remaining}s');
+      return; // Suppress alert if socket is muted
+    }
+
     if (_isAlertDialogOpen) return; // avoid stacking
     setState(() {
       _isAlertDialogOpen = true;
@@ -183,8 +253,19 @@ class _DevicesScreenState extends State<DevicesScreen> {
               setState(() {
                 anomalyDetected = false;
                 _lastAnomalyData = null;
+                _isAlertDialogOpen = false;
               });
+              // Mute this socket for 5 minutes
+              _muteSocket(socketName);
               Navigator.pop(context);
+              // Show mute message
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text('$socketName alerts muted for 5 minutes.'),
+                  backgroundColor: Colors.orange,
+                  duration: const Duration(seconds: 3),
+                ),
+              );
             },
             child: const Text(
               'Dismiss',
@@ -197,6 +278,8 @@ class _DevicesScreenState extends State<DevicesScreen> {
             ),
             onPressed: () async {
               Navigator.pop(context);
+              // Mute this socket before turning it off
+              _muteSocket(socketName);
               await _turnOffAnomalySocket(socketName);
               if (mounted) {
                 setState(() {
@@ -214,10 +297,11 @@ class _DevicesScreenState extends State<DevicesScreen> {
       ),
     );
     dialogFuture.then((_) {
-      if (mounted)
+      if (mounted) {
         setState(() {
           _isAlertDialogOpen = false;
         });
+      }
     });
   }
 
@@ -353,33 +437,8 @@ class _DevicesScreenState extends State<DevicesScreen> {
           debugPrint('⚠️ Consumption update error: $e');
         }
 
-        // Local safety net: if power spikes above threshold, show alert on Devices screen
-        const double localThreshold = 100.0; // match backend anomaly threshold
-        debugPrint(
-            '🔎 Alert check -> power=${power.toStringAsFixed(2)}, threshold=$localThreshold, anomalyFlag=$anomalyDetected');
-        if (mounted && power > localThreshold) {
-          debugPrint('⚠️ Local threshold exceeded, showing alert');
-          final String socketName;
-          if (relay1Status && !relay2Status) {
-            socketName = 'Socket 1';
-          } else if (relay2Status && !relay1Status) {
-            socketName = 'Socket 2';
-          } else {
-            socketName = 'Both Sockets';
-          }
-
-          anomalyDetected = true; // UI indicator
-          _showAnomalyAlertDialog(
-            socketName: socketName,
-            power: power,
-            threshold: localThreshold,
-            message:
-                'High power usage detected on $socketName (approx ${power.toStringAsFixed(0)} W).',
-          );
-        }
         debugPrint(
             '✅ Values Decoded: V=$voltage, I=$current, P=$power, R1=$relay1Status, R2=$relay2Status');
-        // no local state tracking needed for threshold alert
       } else {
         debugPrint('⚠️ Empty response from backend');
       }
@@ -640,7 +699,7 @@ class _DevicesScreenState extends State<DevicesScreen> {
             relay2Status = currentState;
           }
         });
-        throw Exception("Backend API returned failure");
+        throw Exception("ESP32 relay command failed");
       }
     } catch (e) {
       debugPrint("❌ Control Error: $e");
@@ -733,6 +792,28 @@ class _DevicesScreenState extends State<DevicesScreen> {
     final latestCurrent =
         currentDataPoints.isNotEmpty ? currentDataPoints.last.y : 0.0;
 
+    // Calculate dynamic maxY based on actual data with 20% headroom
+    double dynamicMaxY = 300.0; // Default minimum
+    if (powerDataPoints.isNotEmpty) {
+      final maxPower =
+          powerDataPoints.map((p) => p.y).fold(0.0, (a, b) => a > b ? a : b);
+      final maxVoltage = voltageDataPoints.isNotEmpty
+          ? voltageDataPoints.map((p) => p.y).fold(0.0, (a, b) => a > b ? a : b)
+          : 0.0;
+      final maxCurrent = currentDataPoints.isNotEmpty
+          ? currentDataPoints.map((p) => p.y).fold(0.0, (a, b) => a > b ? a : b)
+          : 0.0;
+
+      final maxValue =
+          [maxPower, maxVoltage, maxCurrent].reduce((a, b) => a > b ? a : b);
+      dynamicMaxY = (maxValue * 1.2); // Add 20% headroom
+
+      // Round to nearest 50 for clean Y-axis labels
+      dynamicMaxY = ((dynamicMaxY / 50).ceil() * 50).toDouble();
+      dynamicMaxY =
+          dynamicMaxY < 300 ? 300 : dynamicMaxY; // Minimum 300 for readability
+    }
+
     return Container(
       height: 200,
       padding: const EdgeInsets.all(16),
@@ -746,7 +827,7 @@ class _DevicesScreenState extends State<DevicesScreen> {
           LineChart(
             LineChartData(
               minY: 0,
-              maxY: 300, // Adjust based on your maximum expected load / mains
+              maxY: dynamicMaxY, // Auto-adjusted based on actual consumption
               gridData: FlGridData(
                 show: true,
                 drawVerticalLine: false,
@@ -1172,7 +1253,7 @@ class _DevicesScreenState extends State<DevicesScreen> {
                             ],
                           ),
                         );
-                      }).toList(),
+                      }),
                       SizedBox(height: 20),
                     ],
                   ),
@@ -1404,6 +1485,40 @@ class _DevicesScreenState extends State<DevicesScreen> {
                     ),
                   ),
                 ),
+
+                SizedBox(height: 12),
+
+                // Turn On All Button
+                GestureDetector(
+                  onTap: isControlling ? null : _showTurnOnAllDialog,
+                  child: Container(
+                    width: double.infinity,
+                    padding: EdgeInsets.symmetric(vertical: 14),
+                    decoration: BoxDecoration(
+                      color: Colors.green.withOpacity(0.2),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(
+                        color: Colors.green,
+                        width: 2,
+                      ),
+                    ),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(Icons.power, color: Colors.green, size: 20),
+                        SizedBox(width: 8),
+                        Text(
+                          "Turn On All Devices",
+                          style: TextStyle(
+                            color: Colors.green,
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
               ],
             ),
           ),
@@ -1602,24 +1717,106 @@ class _DevicesScreenState extends State<DevicesScreen> {
           TextButton(
             onPressed: () async {
               Navigator.pop(context);
-              setState(() => isControlling = true);
-
-              // Turn off both relays
-              await ApiService.controlRelay1(false);
-              await ApiService.controlRelay2(false);
-
-              setState(() {
-                relay1Status = false;
-                relay2Status = false;
-                isControlling = false;
-              });
-
-              _showSuccessSnackBar("🚨 All devices shut down!");
+              await _performEmergencyStop();
             },
             child: Text("Yes, Stop All", style: TextStyle(color: Colors.red)),
           ),
         ],
       ),
     );
+  }
+
+  void _showTurnOnAllDialog() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: Color(0xFF1A1A3A),
+        title: Text(
+          "Turn On All Devices",
+          style: TextStyle(color: Colors.green, fontWeight: FontWeight.bold),
+        ),
+        content: Text(
+          "Are you sure you want to turn ON all devices?",
+          style: TextStyle(color: Colors.white70),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: Text("Cancel", style: TextStyle(color: Color(0xFF00D4FF))),
+          ),
+          TextButton(
+            onPressed: () async {
+              Navigator.pop(context);
+              await _performTurnOnAll();
+            },
+            child: Text("Yes, Turn On", style: TextStyle(color: Colors.green)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _performEmergencyStop() async {
+    await _setAllRelays(false);
+  }
+
+  Future<void> _performTurnOnAll() async {
+    await _setAllRelays(true);
+  }
+
+  Future<void> _setAllRelays(bool turnOn) async {
+    final actionText = turnOn ? 'TURN ON ALL' : 'EMERGENCY STOP';
+    final targetStateText = turnOn ? 'ON' : 'OFF';
+    setState(() => isControlling = true);
+
+    try {
+      debugPrint('🚨 $actionText: Turning $targetStateText all relays...');
+
+      // Send both relay commands directly to ESP32 in parallel.
+      // Backend relay endpoints may fail even when direct ESP32 path is healthy.
+      final future1 = turnOn
+          ? ApiService.controlESP32Relay1On()
+          : ApiService.controlESP32Relay1Off();
+      final future2 = turnOn
+          ? ApiService.controlESP32Relay2On()
+          : ApiService.controlESP32Relay2Off();
+
+      final results = await Future.wait([future1, future2]);
+      final relay1Success = results[0];
+      final relay2Success = results[1];
+
+      setState(() {
+        if (relay1Success) relay1Status = turnOn;
+        if (relay2Success) relay2Status = turnOn;
+        isControlling = false;
+      });
+
+      if (relay1Success && relay2Success) {
+        _showSuccessSnackBar(
+          turnOn
+              ? "🟢 All devices turned ON successfully!"
+              : "🚨 All devices shut down successfully!",
+        );
+        debugPrint('✅ $actionText completed: Both relays $targetStateText');
+      } else if (relay1Success || relay2Success) {
+        _showErrorSnackBar(
+          "⚠️ Partial ${turnOn ? 'turn on' : 'shutdown'}:\n" +
+              "${relay1Success ? '✅ Device 1 $targetStateText' : '❌ Device 1 failed'}\n" +
+              "${relay2Success ? '✅ Device 2 $targetStateText' : '❌ Device 2 failed'}",
+        );
+        debugPrint(
+            '⚠️ $actionText partial: R1=$relay1Success, R2=$relay2Success');
+      } else {
+        _showErrorSnackBar(
+          "❌ ${turnOn ? 'Turn on all' : 'Emergency stop'} failed!\nCould not reach ESP32 device.\nCheck network connection.",
+        );
+        debugPrint('❌ $actionText failed: Both relays failed');
+      }
+    } catch (e) {
+      setState(() => isControlling = false);
+      _showErrorSnackBar(
+          "❌ ${turnOn ? 'Turn on all' : 'Emergency stop'} error: $e");
+      debugPrint('❌ $actionText exception: $e');
+    }
   }
 }
