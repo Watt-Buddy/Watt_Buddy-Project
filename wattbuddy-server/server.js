@@ -1,3 +1,4 @@
+require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const http = require('http');
@@ -9,9 +10,8 @@ const axios = require('axios');
 const app = express();
 const server = http.createServer(app);
 
-// Update ESP32_IP to match your device's IP on the network
-const ESP32_IP = '192.168.137.226';
-const ESP32_PORT = 80;
+const ESP32_IP = process.env.ESP32_IP || '192.168.137.226';
+const ESP32_PORT = parseInt(process.env.ESP32_PORT) || 80;
 
 // Use Socket.io to broadcast data to your Flutter App/Dashboard
 const io = socketIO(server, { 
@@ -71,6 +71,10 @@ const goalRewardRoutes = require('./routes/goalRewardRoutes');
 app.use('/api/auth', authRoutes);
 app.use('/api/ml', mlRoutes);
 app.use('/api/usage', usageRoutes);
+
+app.get('/api/config', (req, res) => {
+  res.json({ esp32Ip: ESP32_IP, esp32Port: ESP32_PORT });
+});
 app.use('/api/predictions', predictionRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/goals', goalRoutes);

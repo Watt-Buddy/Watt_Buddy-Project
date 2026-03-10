@@ -1,36 +1,31 @@
-/// Centralized network configuration for WattBuddy
-/// Update these values when connecting to different networks or backend servers
+import 'dart:convert';
+import 'package:flutter/foundation.dart';
+import 'package:http/http.dart' as http;
+
 class NetworkConfig {
-  /// ESP32 device IP address (update when switching networks)
-  static const String ESP32_IP = '192.168.137.226';
+  static String esp32Ip = '192.168.137.226';
+  static int esp32Port = 80;
 
-  /// ESP32 web server port
-  static const int ESP32_PORT = 80;
+  static String get esp32BaseUrl => 'http://$esp32Ip:$esp32Port';
 
-  /// Backend server IP address (update if backend on different machine)
-  static const String BACKEND_IP = 'localhost';
+  /// Fetches ESP32 IP and port from the server /api/config endpoint.
+  /// Called once at app startup — all subsequent ESP32 calls use the loaded values.
+  static Future<void> loadFromServer(String apiBaseUrl) async {
+    try {
+      final url = Uri.parse('$apiBaseUrl/config');
+      final response = await http.get(url, headers: {
+        'Content-Type': 'application/json'
+      }).timeout(const Duration(seconds: 5));
 
-  /// Backend server port
-  static const int BACKEND_PORT = 4000;
-
-  /// Construct ESP32 base URL
-  static String get esp32BaseUrl => 'http://$ESP32_IP:$ESP32_PORT';
-
-  /// Construct backend base URL for API calls
-  static String get backendBaseUrl => 'http://$BACKEND_IP:$BACKEND_PORT/api';
-
-  /// Get current configuration summary
-  static String getConfigSummary() {
-    return '''
-ESP32 Configuration:
-  IP: $ESP32_IP
-  Port: $ESP32_PORT
-  URL: $esp32BaseUrl
-
-Backend Configuration:
-  IP: $BACKEND_IP
-  Port: $BACKEND_PORT
-  API Base: $backendBaseUrl
-''';
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body) as Map<String, dynamic>;
+        if (data['esp32Ip'] != null) esp32Ip = data['esp32Ip'] as String;
+        if (data['esp32Port'] != null) esp32Port = data['esp32Port'] as int;
+        debugPrint('✅ NetworkConfig loaded: ESP32=$esp32Ip:$esp32Port');
+      }
+    } catch (e) {
+      debugPrint(
+          '⚠️ Could not load network config from server, using default: $e');
+    }
   }
 }

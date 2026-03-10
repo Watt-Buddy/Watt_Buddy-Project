@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 // import 'package:firebase_core/firebase_core.dart';
+import 'config/network_config.dart';
+import 'services/api_service.dart';
 import 'services/notification_service.dart';
 import 'services/enhanced_notification_service.dart';
 import 'screens/login_register.dart';
@@ -13,6 +15,7 @@ import 'screens/bill_prediction_screen.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await NetworkConfig.loadFromServer(ApiService.baseUrl);
   // await Firebase.initializeApp();
   await NotificationService.initialize();
   await EnhancedNotificationService.initialize();

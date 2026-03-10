@@ -8,6 +8,7 @@ import 'package:fl_chart/fl_chart.dart';
 import '../services/api_service.dart';
 import '../services/realtime_anomaly_service.dart';
 import '../utils/responsive_scaffold.dart';
+import '../config/network_config.dart';
 
 class DevicesScreen extends StatefulWidget {
   const DevicesScreen({super.key});
@@ -96,8 +97,8 @@ class _DevicesScreenState extends State<DevicesScreen> {
   List<FlSpot> currentDataPoints = [];
   double timerCount = 0;
 
-  // ESP32 Direct IP - Must match your ESP32 IP shown in Serial Monitor
-  final String esp32Ip = "192.168.137.226";
+  // ESP32 IP loaded from server config at startup via NetworkConfig
+  String get esp32Ip => NetworkConfig.esp32Ip;
 
   @override
   void initState() {

@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
+import '../config/network_config.dart';
 
 class ApiService {
   static const String _configuredApiBaseUrl = String.fromEnvironment(
@@ -251,7 +252,7 @@ class ApiService {
     try {
       debugPrint('📊 Fetching ESP32 sensor readings...');
 
-      const String espIp = '192.168.137.226';
+      final String espIp = NetworkConfig.esp32Ip;
       final url = Uri.parse('http://$espIp/api/readings');
       final response = await http.get(
         url,
@@ -311,7 +312,8 @@ class ApiService {
   static Future<bool> controlESP32Relay1On() async {
     try {
       debugPrint('🔌 Turning ESP32 Relay 1 ON...');
-      const String url = 'http://192.168.137.226:80/relay1/on';
+      final String url =
+          'http://${NetworkConfig.esp32Ip}:${NetworkConfig.esp32Port}/relay1/on';
       final response = await http.get(Uri.parse(url), headers: {
         'Content-Type': 'application/json'
       }).timeout(const Duration(seconds: 5));
@@ -325,7 +327,7 @@ class ApiService {
           '⚠️ Relay 1 ON returned HTTP ${response.statusCode}: ${response.body}');
       return false;
     } catch (e) {
-      debugPrint('❌ Relay 1 ON error (192.168.137.226): $e');
+      debugPrint('❌ Relay 1 ON error (${NetworkConfig.esp32Ip}): $e');
       return false;
     }
   }
@@ -334,7 +336,8 @@ class ApiService {
   static Future<bool> controlESP32Relay1Off() async {
     try {
       debugPrint('🔌 Turning ESP32 Relay 1 OFF...');
-      const String url = 'http://192.168.137.226:80/relay1/off';
+      final String url =
+          'http://${NetworkConfig.esp32Ip}:${NetworkConfig.esp32Port}/relay1/off';
       final response = await http.get(Uri.parse(url), headers: {
         'Content-Type': 'application/json'
       }).timeout(const Duration(seconds: 5));
@@ -348,7 +351,7 @@ class ApiService {
           '⚠️ Relay 1 OFF returned HTTP ${response.statusCode}: ${response.body}');
       return false;
     } catch (e) {
-      debugPrint('❌ Relay 1 OFF error (192.168.137.226): $e');
+      debugPrint('❌ Relay 1 OFF error (${NetworkConfig.esp32Ip}): $e');
       return false;
     }
   }
@@ -357,7 +360,8 @@ class ApiService {
   static Future<bool> controlESP32Relay2On() async {
     try {
       debugPrint('🔌 Turning ESP32 Relay 2 ON...');
-      const String url = 'http://192.168.137.226:80/relay2/on';
+      final String url =
+          'http://${NetworkConfig.esp32Ip}:${NetworkConfig.esp32Port}/relay2/on';
       final response = await http.get(Uri.parse(url), headers: {
         'Content-Type': 'application/json'
       }).timeout(const Duration(seconds: 5));
@@ -371,7 +375,7 @@ class ApiService {
           '⚠️ Relay 2 ON returned HTTP ${response.statusCode}: ${response.body}');
       return false;
     } catch (e) {
-      debugPrint('❌ Relay 2 ON error (192.168.137.226): $e');
+      debugPrint('❌ Relay 2 ON error (${NetworkConfig.esp32Ip}): $e');
       return false;
     }
   }
@@ -380,7 +384,8 @@ class ApiService {
   static Future<bool> controlESP32Relay2Off() async {
     try {
       debugPrint('🔌 Turning ESP32 Relay 2 OFF...');
-      const String url = 'http://192.168.137.226:80/relay2/off';
+      final String url =
+          'http://${NetworkConfig.esp32Ip}:${NetworkConfig.esp32Port}/relay2/off';
       final response = await http.get(Uri.parse(url), headers: {
         'Content-Type': 'application/json'
       }).timeout(const Duration(seconds: 5));
@@ -394,7 +399,7 @@ class ApiService {
           '⚠️ Relay 2 OFF returned HTTP ${response.statusCode}: ${response.body}');
       return false;
     } catch (e) {
-      debugPrint('❌ Relay 2 OFF error (192.168.137.226): $e');
+      debugPrint('❌ Relay 2 OFF error (${NetworkConfig.esp32Ip}): $e');
       return false;
     }
   }
@@ -403,7 +408,8 @@ class ApiService {
   static Future<bool> turnESP32RelayOn() async {
     try {
       debugPrint('🔌 Turning ESP32 relay ON...');
-      const String esp32Url = 'http://192.168.137.226:80/relay/on';
+      final String esp32Url =
+          'http://${NetworkConfig.esp32Ip}:${NetworkConfig.esp32Port}/relay/on';
 
       final response = await http.post(
         Uri.parse(esp32Url),
@@ -425,7 +431,8 @@ class ApiService {
   static Future<bool> turnESP32RelayOff() async {
     try {
       debugPrint('🔌 Turning ESP32 relay OFF...');
-      const String esp32Url = 'http://192.168.137.226:80/relay/off';
+      final String esp32Url =
+          'http://${NetworkConfig.esp32Ip}:${NetworkConfig.esp32Port}/relay/off';
 
       final response = await http.post(
         Uri.parse(esp32Url),
@@ -447,7 +454,8 @@ class ApiService {
   static Future<Map<String, dynamic>> getESP32RelayStatus() async {
     try {
       debugPrint('📊 Fetching ESP32 relay status...');
-      const String esp32Url = 'http://192.168.137.226:80/relay/status';
+      final String esp32Url =
+          'http://${NetworkConfig.esp32Ip}:${NetworkConfig.esp32Port}/relay/status';
 
       final response = await http.get(
         Uri.parse(esp32Url),
@@ -477,8 +485,9 @@ class ApiService {
       debugPrint('👤 Setting ESP32 user: $userId');
       // Match current ESP32 static IP and firmware route (/set-user?id=...)
       // Must match ESP32 Serial Monitor "IP: ..."
-      const String esp32Ip = '192.168.137.226';
-      final String esp32Url = 'http://$esp32Ip:80/set-user?id=$userId';
+      final String esp32Ip = NetworkConfig.esp32Ip;
+      final String esp32Url =
+          'http://$esp32Ip:${NetworkConfig.esp32Port}/set-user?id=$userId';
 
       final response = await http.get(
         Uri.parse(esp32Url),
@@ -500,7 +509,8 @@ class ApiService {
   static Future<Map<String, dynamic>> getESP32Energy() async {
     try {
       debugPrint('⚡ Fetching ESP32 energy data...');
-      const String esp32Url = 'http://192.168.137.226:80/energy';
+      final String esp32Url =
+          'http://${NetworkConfig.esp32Ip}:${NetworkConfig.esp32Port}/energy';
 
       final response = await http.get(
         Uri.parse(esp32Url),
@@ -528,8 +538,8 @@ class ApiService {
     debugPrint('🔍 Starting ESP32 connectivity diagnosis...');
     List<String> results = ['=== ESP32 CONNECTIVITY DIAGNOSIS ==='];
 
-    const List<String> esp32Ips = [
-      '192.168.137.226', // Primary (actual ESP32 IP)
+    final List<String> esp32Ips = [
+      NetworkConfig.esp32Ip, // loaded from server .env
       'wattbuddy.local', // mDNS (optional)
     ];
 
