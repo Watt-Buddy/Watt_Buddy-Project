@@ -7,6 +7,8 @@ class EnhancedNotificationService {
   static final FlutterLocalNotificationsPlugin _notificationsPlugin =
       FlutterLocalNotificationsPlugin();
 
+  static bool _isInitialized = false;
+
   // Notification channel IDs
   static const String anomalyChannel = 'anomaly_alerts';
   static const String billPredictionChannel = 'bill_prediction_alerts';
@@ -45,16 +47,13 @@ class EnhancedNotificationService {
           _onBackgroundNotificationTapped,
     );
 
-    // Create notification channels for Android
     await _createNotificationChannels();
-
+    _isInitialized = true;
     debugPrint('✅ Enhanced Notification Service Initialized');
   }
 
   /// Create Android notification channels
   static Future<void> _createNotificationChannels() async {
-    // Notification channels are auto-created by flutter_local_notifications
-    // This method is kept for future customization if needed
     debugPrint('✅ Notification channels ready');
   }
 
@@ -79,15 +78,12 @@ class EnhancedNotificationService {
 
     switch (type) {
       case 'anomaly':
-        // Handle anomaly notification
         debugPrint('⚠️ Anomaly action triggered');
         break;
       case 'bill_prediction':
-        // Handle bill prediction notification
         debugPrint('💰 Bill prediction action triggered');
         break;
       case 'summary':
-        // Handle summary notification
         debugPrint('📊 Summary action triggered');
         break;
       default:
@@ -95,9 +91,6 @@ class EnhancedNotificationService {
     }
   }
 
-  // ========== ANOMALY DETECTION NOTIFICATIONS ==========
-
-  /// Send anomaly detection alert
   static Future<void> sendAnomalyAlert({
     required String title,
     required String body,
@@ -106,59 +99,76 @@ class EnhancedNotificationService {
     double? current,
     double? power,
   }) async {
-    const AndroidNotificationDetails androidDetails =
-        AndroidNotificationDetails(
-      anomalyChannel,
-      'Anomaly Alerts',
-      channelDescription: 'Critical alerts for power anomalies',
-      importance: Importance.max,
-      priority: Priority.max,
-      enableLights: true,
-      enableVibration: true,
-      playSound: true,
-      fullScreenIntent: true,
-      styleInformation: BigTextStyleInformation(''),
-    );
+    try {
+      // Skip if not initialized to avoid LateInitializationError
+      if (!_isInitialized) {
+        debugPrint(
+            '⚠️ Notification service not yet initialized, skipping anomaly alert');
+        return;
+      }
 
-    const DarwinNotificationDetails iOSDetails = DarwinNotificationDetails(
-      presentAlert: true,
-      presentBadge: true,
-      presentSound: true,
-      badgeNumber: 1,
-      sound: 'notification.caf',
-    );
+      const AndroidNotificationDetails androidDetails =
+          AndroidNotificationDetails(
+        anomalyChannel,
+        'Anomaly Alerts',
+        channelDescription: 'Critical alerts for power anomalies',
+        importance: Importance.max,
+        priority: Priority.max,
+        enableLights: true,
+        enableVibration: true,
+        playSound: true,
+        fullScreenIntent: true,
+        styleInformation: BigTextStyleInformation(''),
+      );
 
-    final NotificationDetails notificationDetails = NotificationDetails(
-      android: androidDetails,
-      iOS: iOSDetails,
-    );
+      const DarwinNotificationDetails iOSDetails = DarwinNotificationDetails(
+        presentAlert: true,
+        presentBadge: true,
+        presentSound: true,
+        badgeNumber: 1,
+        sound: 'notification.caf',
+      );
 
-    String displayBody = body;
-    if (voltage != null && current != null && power != null) {
-      displayBody =
-          '$body\nV: ${voltage.toStringAsFixed(1)}V | I: ${current.toStringAsFixed(2)}A | P: ${power.toStringAsFixed(0)}W';
+      final NotificationDetails notificationDetails = NotificationDetails(
+        android: androidDetails,
+        iOS: iOSDetails,
+      );
+
+      String displayBody = body;
+      if (voltage != null && current != null && power != null) {
+        displayBody =
+            '$body\nV: ${voltage.toStringAsFixed(1)}V | I: ${current.toStringAsFixed(2)}A | P: ${power.toStringAsFixed(0)}W';
+      }
+
+      try {
+        await _notificationsPlugin.show(
+          anomalyAlertId,
+          title,
+          displayBody,
+          notificationDetails,
+          payload: 'anomaly:$anomalyType',
+        );
+      } catch (e) {
+        debugPrint(
+            '⚠️ Failed to show notification (may be unsupported on this platform): $e');
+      }
+
+      // Log to server (non-blocking, catch errors to avoid side-effects failures)
+      try {
+        await _logAnomalyToServer(
+          anomalyType: anomalyType,
+          voltage: voltage ?? 0,
+          current: current ?? 0,
+          power: power ?? 0,
+        );
+      } catch (e) {
+        debugPrint('⚠️ Failed to log anomaly to server (non-critical): $e');
+      }
+    } catch (e) {
+      debugPrint('⚠️ Error in sendAnomalyAlert: $e');
     }
-
-    await _notificationsPlugin.show(
-      anomalyAlertId,
-      title,
-      displayBody,
-      notificationDetails,
-      payload: 'anomaly:$anomalyType',
-    );
-
-    // Log to server
-    await _logAnomalyToServer(
-      anomalyType: anomalyType,
-      voltage: voltage ?? 0,
-      current: current ?? 0,
-      power: power ?? 0,
-    );
   }
 
-  // ========== BILL PREDICTION NOTIFICATIONS ==========
-
-  /// Send bill prediction alert
   static Future<void> sendBillPredictionAlert({
     required String title,
     required String body,
@@ -214,7 +224,6 @@ class EnhancedNotificationService {
     );
   }
 
-  /// Send high bill warning alert
   static Future<void> sendHighBillWarning({
     required double predictedBill,
     required double threshold,
@@ -240,9 +249,6 @@ class EnhancedNotificationService {
     );
   }
 
-  // ========== DAILY SUMMARY NOTIFICATIONS ==========
-
-  /// Send daily energy summary
   static Future<void> sendDailySummary({
     required String dailyEnergy,
     required String peakPower,
@@ -282,9 +288,6 @@ class EnhancedNotificationService {
     );
   }
 
-  // ========== RELAY CONTROL NOTIFICATIONS ==========
-
-  /// Send relay status notification
   static Future<void> sendRelayStatusNotification({
     required bool isOn,
     required String reason,
@@ -320,9 +323,6 @@ class EnhancedNotificationService {
     );
   }
 
-  // ========== CRITICAL ALERTS ==========
-
-  /// Send critical alert
   static Future<void> sendCriticalAlert({
     required String title,
     required String body,
@@ -363,9 +363,6 @@ class EnhancedNotificationService {
     );
   }
 
-  // ========== SERVER LOGGING ==========
-
-  /// Log anomaly detection to server
   static Future<void> _logAnomalyToServer({
     required String anomalyType,
     required double voltage,
@@ -382,9 +379,10 @@ class EnhancedNotificationService {
           'power': power,
           'timestamp': DateTime.now().toIso8601String(),
         },
-      );
+      ).timeout(const Duration(seconds: 5)); // Add timeout to prevent hanging
     } catch (e) {
-      debugPrint('❌ Error logging anomaly to server: $e');
+      debugPrint('⚠️ Error logging anomaly to server (non-critical): $e');
+      // Don't rethrow - this is a non-critical operation
     }
   }
 

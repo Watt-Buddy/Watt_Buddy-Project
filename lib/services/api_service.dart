@@ -5,8 +5,6 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
 class ApiService {
-  // Optional override, for example:
-  // flutter run -d android --dart-define=API_BASE_URL=http://192.168.184.49:4000/api
   static const String _configuredApiBaseUrl = String.fromEnvironment(
     'API_BASE_URL',
     defaultValue: '',
@@ -38,18 +36,14 @@ class ApiService {
       return 'http://10.0.2.2:4000/api';
     }
 
-    // Windows / macOS / Linux
     return 'http://localhost:4000/api';
   }
 
   static String get serverConfigHint =>
       'For a real Android phone, run with --dart-define=API_BASE_URL=http://<PC_LAN_IP>:4000/api';
 
-  // Connection timeout - increase from 10 to 30 seconds to allow for database operations
   static const Duration connectionTimeout = Duration(seconds: 30);
 
-  // ============ GENERIC HTTP METHODS ============
-  /// Generic POST request
   static Future<Map<String, dynamic>> post(
     String endpoint,
     Map<String, dynamic> body,
@@ -74,7 +68,6 @@ class ApiService {
     }
   }
 
-  /// Generic GET request
   static Future<Map<String, dynamic>> get(String endpoint) async {
     try {
       debugPrint('📤 GET $endpoint');
@@ -92,7 +85,6 @@ class ApiService {
     }
   }
 
-  // ---------------- REGISTER ----------------
   static Future<Map<String, dynamic>> register({
     required String username,
     required String email,
@@ -143,7 +135,6 @@ class ApiService {
     }
   }
 
-  // ---------------- LOGIN ----------------
   static Future<bool> login({
     required String email,
     required String password,
@@ -185,7 +176,6 @@ class ApiService {
     }
   }
 
-  // ============ RELAY CONTROL ============
   static Future<bool> controlRelay1(bool turnOn) async {
     try {
       // Match Node.js server routes in server.js:
@@ -257,19 +247,12 @@ class ApiService {
     }
   }
 
-  // ============ ESP32 SENSOR ENDPOINTS ============
-
-  /// Get current sensor readings from ESP32
-  /// Reads: Voltage, Current, Power, Energy, Relay Status
   static Future<Map<String, dynamic>> getESP32Sensors() async {
     try {
       debugPrint('📊 Fetching ESP32 sensor readings...');
 
-      // FORCE the correct IP - must match ESP32 Serial "IP: ..."
-      const String espIp = '192.168.137.154';
+      const String espIp = '192.168.137.226';
       final url = Uri.parse('http://$espIp/api/readings');
-
-      debugPrint('🔍 ESP32 Direct: http://$espIp/api/readings');
       final response = await http.get(
         url,
         headers: {'Content-Type': 'application/json'},
@@ -328,7 +311,7 @@ class ApiService {
   static Future<bool> controlESP32Relay1On() async {
     try {
       debugPrint('🔌 Turning ESP32 Relay 1 ON...');
-      const String url = 'http://192.168.137.154:80/relay1/on';
+      const String url = 'http://192.168.137.226:80/relay1/on';
       final response = await http.get(Uri.parse(url), headers: {
         'Content-Type': 'application/json'
       }).timeout(const Duration(seconds: 5));
@@ -342,7 +325,7 @@ class ApiService {
           '⚠️ Relay 1 ON returned HTTP ${response.statusCode}: ${response.body}');
       return false;
     } catch (e) {
-      debugPrint('❌ Relay 1 ON error (192.168.137.154): $e');
+      debugPrint('❌ Relay 1 ON error (192.168.137.226): $e');
       return false;
     }
   }
@@ -351,7 +334,7 @@ class ApiService {
   static Future<bool> controlESP32Relay1Off() async {
     try {
       debugPrint('🔌 Turning ESP32 Relay 1 OFF...');
-      const String url = 'http://192.168.137.154:80/relay1/off';
+      const String url = 'http://192.168.137.226:80/relay1/off';
       final response = await http.get(Uri.parse(url), headers: {
         'Content-Type': 'application/json'
       }).timeout(const Duration(seconds: 5));
@@ -365,7 +348,7 @@ class ApiService {
           '⚠️ Relay 1 OFF returned HTTP ${response.statusCode}: ${response.body}');
       return false;
     } catch (e) {
-      debugPrint('❌ Relay 1 OFF error (192.168.137.154): $e');
+      debugPrint('❌ Relay 1 OFF error (192.168.137.226): $e');
       return false;
     }
   }
@@ -374,7 +357,7 @@ class ApiService {
   static Future<bool> controlESP32Relay2On() async {
     try {
       debugPrint('🔌 Turning ESP32 Relay 2 ON...');
-      const String url = 'http://192.168.137.154:80/relay2/on';
+      const String url = 'http://192.168.137.226:80/relay2/on';
       final response = await http.get(Uri.parse(url), headers: {
         'Content-Type': 'application/json'
       }).timeout(const Duration(seconds: 5));
@@ -388,7 +371,7 @@ class ApiService {
           '⚠️ Relay 2 ON returned HTTP ${response.statusCode}: ${response.body}');
       return false;
     } catch (e) {
-      debugPrint('❌ Relay 2 ON error (192.168.137.154): $e');
+      debugPrint('❌ Relay 2 ON error (192.168.137.226): $e');
       return false;
     }
   }
@@ -397,7 +380,7 @@ class ApiService {
   static Future<bool> controlESP32Relay2Off() async {
     try {
       debugPrint('🔌 Turning ESP32 Relay 2 OFF...');
-      const String url = 'http://192.168.137.154:80/relay2/off';
+      const String url = 'http://192.168.137.226:80/relay2/off';
       final response = await http.get(Uri.parse(url), headers: {
         'Content-Type': 'application/json'
       }).timeout(const Duration(seconds: 5));
@@ -411,7 +394,7 @@ class ApiService {
           '⚠️ Relay 2 OFF returned HTTP ${response.statusCode}: ${response.body}');
       return false;
     } catch (e) {
-      debugPrint('❌ Relay 2 OFF error (192.168.137.154): $e');
+      debugPrint('❌ Relay 2 OFF error (192.168.137.226): $e');
       return false;
     }
   }
@@ -420,7 +403,7 @@ class ApiService {
   static Future<bool> turnESP32RelayOn() async {
     try {
       debugPrint('🔌 Turning ESP32 relay ON...');
-      const String esp32Url = 'http://192.168.137.154:80/relay/on';
+      const String esp32Url = 'http://192.168.137.226:80/relay/on';
 
       final response = await http.post(
         Uri.parse(esp32Url),
@@ -442,7 +425,7 @@ class ApiService {
   static Future<bool> turnESP32RelayOff() async {
     try {
       debugPrint('🔌 Turning ESP32 relay OFF...');
-      const String esp32Url = 'http://192.168.137.154:80/relay/off';
+      const String esp32Url = 'http://192.168.137.226:80/relay/off';
 
       final response = await http.post(
         Uri.parse(esp32Url),
@@ -464,7 +447,7 @@ class ApiService {
   static Future<Map<String, dynamic>> getESP32RelayStatus() async {
     try {
       debugPrint('📊 Fetching ESP32 relay status...');
-      const String esp32Url = 'http://192.168.137.154:80/relay/status';
+      const String esp32Url = 'http://192.168.137.226:80/relay/status';
 
       final response = await http.get(
         Uri.parse(esp32Url),
@@ -494,7 +477,7 @@ class ApiService {
       debugPrint('👤 Setting ESP32 user: $userId');
       // Match current ESP32 static IP and firmware route (/set-user?id=...)
       // Must match ESP32 Serial Monitor "IP: ..."
-      const String esp32Ip = '192.168.137.154';
+      const String esp32Ip = '192.168.137.226';
       final String esp32Url = 'http://$esp32Ip:80/set-user?id=$userId';
 
       final response = await http.get(
@@ -517,7 +500,7 @@ class ApiService {
   static Future<Map<String, dynamic>> getESP32Energy() async {
     try {
       debugPrint('⚡ Fetching ESP32 energy data...');
-      const String esp32Url = 'http://192.168.137.154:80/energy';
+      const String esp32Url = 'http://192.168.137.226:80/energy';
 
       final response = await http.get(
         Uri.parse(esp32Url),
@@ -546,7 +529,7 @@ class ApiService {
     List<String> results = ['=== ESP32 CONNECTIVITY DIAGNOSIS ==='];
 
     const List<String> esp32Ips = [
-      '192.168.137.154', // Primary (actual ESP32 IP)
+      '192.168.137.226', // Primary (actual ESP32 IP)
       'wattbuddy.local', // mDNS (optional)
     ];
 
@@ -578,11 +561,6 @@ class ApiService {
     return diagReport;
   }
 
-  // ============ GOAL TRACKING ============
-
-  // ============ REWARDS ============
-
-  /// Get reward profile for a user
   static Future<Map<String, dynamic>> getUserRewards(int userId) async {
     return await get('/rewards/$userId');
   }

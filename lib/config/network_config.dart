@@ -2,7 +2,7 @@
 /// Update these values when connecting to different networks or backend servers
 class NetworkConfig {
   /// ESP32 device IP address (update when switching networks)
-  static const String ESP32_IP = '192.168.137.154';
+  static const String ESP32_IP = '192.168.137.226';
 
   /// ESP32 web server port
   static const int ESP32_PORT = 80;

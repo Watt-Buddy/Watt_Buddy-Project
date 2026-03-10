@@ -25,7 +25,6 @@ class RealtimeAnomalyService {
       _onAnomalyAlert = onAnomalyAlert;
       _onRelayStatusChanged = onRelayStatusChanged;
 
-      // Connect to backend server (Socket.io uses http:// not ws://)
       final baseUrl = ApiService.baseUrl.replaceFirst('/api', '');
       _socket = IO.io(
         baseUrl,
@@ -40,7 +39,6 @@ class RealtimeAnomalyService {
         debugPrint('✅ Socket.io Connected: ${_socket!.id}');
       });
 
-      // 🚨 Listen for Anomaly Alerts
       _socket!.on('anomaly_alert', (data) async {
         try {
           debugPrint('🚨 Anomaly Alert Received: $data');
@@ -48,7 +46,6 @@ class RealtimeAnomalyService {
 
           final payload = Map<String, dynamic>.from(data);
           if (_onAnomalyAlert != null) {
-            // Keep UI updates independent from notification side-effects.
             try {
               _onAnomalyAlert!(payload);
             } catch (e) {
@@ -66,7 +63,6 @@ class RealtimeAnomalyService {
         }
       });
 
-      // 🔌 Listen for Relay Status Updates
       _socket!.on('relay_status', (data) {
         try {
           debugPrint('🔌 Relay Status Update: $data');
@@ -81,7 +77,6 @@ class RealtimeAnomalyService {
         }
       });
 
-      // 📡 Listen for Live Data Updates
       _socket!.on('live_data_update', (data) {
         try {
           if (data is! Map) return;
@@ -107,50 +102,56 @@ class RealtimeAnomalyService {
 
   /// Internal handler for anomaly alerts
   static Future<void> _handleAnomalyAlert(Map<String, dynamic> data) async {
-    final isAbnormal = data['isAbnormal'] as bool? ?? false;
-    if (!isAbnormal) return;
+    try {
+      final isAbnormal = data['isAbnormal'] as bool? ?? false;
+      if (!isAbnormal) return;
 
-    final anomalySocket = data['anomalySocket'] as String? ?? 'Unknown';
-    final currentPower = (data['currentPower'] as num?) ?? 0;
-    final message = data['message'] as String? ?? 'High power usage detected';
-    final dominantRelay = (data['dominantRelay'] as num?)?.toInt() ?? 0;
-    final dominantPower = (data['dominantPower'] as num?)?.toDouble() ?? 0.0;
+      final anomalySocket = data['anomalySocket'] as String? ?? 'Unknown';
+      final currentPower = (data['currentPower'] as num?) ?? 0;
+      final message = data['message'] as String? ?? 'High power usage detected';
+      final dominantRelay = (data['dominantRelay'] as num?)?.toInt() ?? 0;
+      final dominantPower = (data['dominantPower'] as num?)?.toDouble() ?? 0.0;
 
-    // Load friendly device names from SharedPreferences once
-    if (_relay1Name == null || _relay2Name == null) {
-      try {
-        final prefs = await SharedPreferences.getInstance();
-        _relay1Name = prefs.getString('relay1_name') ?? 'Device 1';
-        _relay2Name = prefs.getString('relay2_name') ?? 'Device 2';
-      } catch (e) {
-        debugPrint('⚠️ Failed to load relay names: $e');
-        _relay1Name ??= 'Device 1';
-        _relay2Name ??= 'Device 2';
+      if (_relay1Name == null || _relay2Name == null) {
+        try {
+          final prefs = await SharedPreferences.getInstance();
+          _relay1Name = prefs.getString('relay1_name') ?? 'Device 1';
+          _relay2Name = prefs.getString('relay2_name') ?? 'Device 2';
+        } catch (e) {
+          debugPrint('⚠️ Failed to load relay names: $e');
+          _relay1Name = _relay1Name ?? 'Device 1';
+          _relay2Name = _relay2Name ?? 'Device 2';
+        }
       }
+
+      String deviceName = anomalySocket;
+      if (dominantRelay == 1) deviceName = _relay1Name ?? 'Device 1';
+      if (dominantRelay == 2) deviceName = _relay2Name ?? 'Device 2';
+
+      String body = message;
+      if (dominantRelay != 0 && dominantPower > 0) {
+        body =
+            '$message\nLikely source: $deviceName (~${dominantPower.toStringAsFixed(0)}W)';
+      }
+
+      try {
+        await EnhancedNotificationService.sendAnomalyAlert(
+          title: dominantRelay != 0
+              ? '⚠️ Possible Faulty Device: $deviceName'
+              : '⚠️ Power Spike Alert!',
+          body: body,
+          anomalyType: dominantRelay != 0 ? 'DeviceFault' : 'HighPowerUsage',
+          power: currentPower.toDouble(),
+        );
+      } catch (notifyErr) {
+        debugPrint('⚠️ Failed to send anomaly notification: $notifyErr');
+      }
+
+      debugPrint(
+          '🚨 Anomaly: $anomalySocket using ${currentPower}W, dominantRelay=$dominantRelay, dominantPower=$dominantPower');
+    } catch (e) {
+      debugPrint('⚠️ Error in anomaly alert handler: $e');
     }
-
-    String deviceName = anomalySocket;
-    if (dominantRelay == 1) deviceName = _relay1Name ?? 'Device 1';
-    if (dominantRelay == 2) deviceName = _relay2Name ?? 'Device 2';
-
-    // Build two-level alert message: generic anomaly + device-specific hint
-    String body = message;
-    if (dominantRelay != 0 && dominantPower > 0) {
-      body =
-          '$message\nLikely source: $deviceName (~${dominantPower.toStringAsFixed(0)}W)';
-    }
-
-    await EnhancedNotificationService.sendAnomalyAlert(
-      title: dominantRelay != 0
-          ? '⚠️ Possible Faulty Device: $deviceName'
-          : '⚠️ Power Spike Alert!',
-      body: body,
-      anomalyType: dominantRelay != 0 ? 'DeviceFault' : 'HighPowerUsage',
-      power: currentPower.toDouble(),
-    );
-
-    debugPrint(
-        '🚨 Anomaly: $anomalySocket using ${currentPower}W, dominantRelay=$dominantRelay, dominantPower=$dominantPower');
   }
 
   /// Turn off a specific socket (Socket 1 or Socket 2)
@@ -158,7 +159,6 @@ class RealtimeAnomalyService {
     try {
       final socketNum = socketName.contains('1') ? '1' : '2';
 
-      // Call ESP32 directly to turn off the relay
       bool success = false;
       if (socketNum == '1') {
         success = await ApiService.controlESP32Relay1Off();
@@ -168,8 +168,6 @@ class RealtimeAnomalyService {
 
       if (success) {
         debugPrint('✅ Socket $socketNum relay turned OFF via ESP32');
-
-        // Send confirmation notification
         await EnhancedNotificationService.sendRelayStatusNotification(
           isOn: false,
           reason: 'User disabled due to high power usage',
@@ -191,7 +189,6 @@ class RealtimeAnomalyService {
     try {
       final socketNum = socketName.contains('1') ? '1' : '2';
 
-      // Call ESP32 directly to turn on the relay
       bool success = false;
       if (socketNum == '1') {
         success = await ApiService.controlESP32Relay1On();

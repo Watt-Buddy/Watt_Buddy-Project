@@ -97,7 +97,7 @@ class _DevicesScreenState extends State<DevicesScreen> {
   double timerCount = 0;
 
   // ESP32 Direct IP - Must match your ESP32 IP shown in Serial Monitor
-  final String esp32Ip = "192.168.137.154";
+  final String esp32Ip = "192.168.137.226";
 
   @override
   void initState() {

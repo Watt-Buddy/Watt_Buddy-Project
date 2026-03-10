@@ -9,9 +9,8 @@ const axios = require('axios');
 const app = express();
 const server = http.createServer(app);
 
-// ESP32 IP Address - Update this to match your ESP32's IP
-// Windows Mobile Hotspot: 192.168.137.154
-const ESP32_IP = '192.168.137.154';
+// Update ESP32_IP to match your device's IP on the network
+const ESP32_IP = '192.168.137.226';
 const ESP32_PORT = 80;
 
 // Use Socket.io to broadcast data to your Flutter App/Dashboard
@@ -20,7 +19,6 @@ const io = socketIO(server, {
     transports: ['websocket', 'polling'] 
 });
 
-// ============ IN-MEMORY CACHE ============
 let esp32LatestData = {
   voltage: 0, 
   current: 0, 
@@ -32,33 +30,21 @@ let esp32LatestData = {
   timestamp: new Date().toISOString()
 };
 
-// Track last database write to optimize database growth
 let lastDbWrite = {
   timestamp: 0,
   energy_consumed: 0
 };
 
-// ============ PATTERN LEARNING IN-MEMORY STRUCTURES ============
-// Relay Power Attribution Tracking (for socket identification)
 let relayToggleEvents = {};
-
-// User Power Consumption History (moving window, max 100 readings per user)
 let userPowerHistory = {};
-
-// Alert Dismissal Tracking (for 2-minute re-alert logic)
 let dismissedAlerts = {};
-
-// Socket Power Signatures (learned from relay toggles)
 let socketPowerSignatures = {};
-
-// Track previous relay states to detect toggles
 let previousRelayStates = {};
 
 app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// ============ SERVICES & ROUTES ============
 const ESP32StorageService = require('./services/esp32StorageService');
 const RealtimeGraphService = require('./services/realtimeGraphService');
 const MLPredictionService = require('./services/mlPredictionService');
@@ -109,15 +95,12 @@ PatternAnalysisService.ensureSchema().catch(err => {
   console.error('❌ Pattern analysis schema init failed:', err);
 });
 
-// ============ TEST ROUTE ============
 app.get('/', (req, res) => {
   res.send('🚀 WattBuddy Server Running');
 });
 
-// ============ 2️⃣ ESP32 DATA RECEIVER (MODIFIED TO SAVE TO DB) ============
 app.post('/api/esp32/data', async (req, res) => {
   try {
-    // Accept either `energy` or `energy_consumed` from different firmware versions
     const { voltage, current, power, energy, energy_consumed, relay1, relay2, userId, dominantRelay, dominantPower } = req.body;
     const pool = require('./db');
     const now = Date.now();
@@ -168,21 +151,18 @@ app.post('/api/esp32/data', async (req, res) => {
 
     io.emit('live_data_update', esp32LatestData);
 
-    // Decide DB write quickly and ACK immediately so ESP32 does not time out.
     const timeSinceLastWrite = now - lastDbWrite.timestamp;
     const energyDifference = Math.abs(parsedEnergy - (parseFloat(lastDbWrite.energy_consumed) || 0));
     const shouldWrite = timeSinceLastWrite >= 60000 || energyDifference >= 0.001;
 
     res.json({ success: true, accepted: true, data: esp32LatestData, dbWrite: shouldWrite });
 
-    // Continue heavy work in background.
     setImmediate(async () => {
       try {
         try {
           const activeUserId = userId || '8';
           const currentPower = parsedPower;
 
-          // Step 1: Record relay toggle for socket signature learning
           const prevState = previousRelayStates[activeUserId] || { relay1: parsedRelay1, relay2: parsedRelay2, power: currentPower };
           if (prevState.relay1 !== parsedRelay1 || prevState.relay2 !== parsedRelay2) {
             await PatternAnalysisService.recordToggleEvent(
@@ -197,7 +177,6 @@ app.post('/api/esp32/data', async (req, res) => {
           }
           previousRelayStates[activeUserId] = { relay1: parsedRelay1, relay2: parsedRelay2, power: currentPower };
 
-          // Step 2: Get user baseline (grace period check)
           const baseline = await DailyAnalyticsService.getUserBaseline(activeUserId);
 
           if (baseline.isInGracePeriod) {
@@ -207,11 +186,8 @@ app.post('/api/esp32/data', async (req, res) => {
               console.log(`📊 [HISTORY CHECK] User ${activeUserId} has limited baseline history (${baseline.sampleSize || 0} day). Pattern/baseline analysis will continue with available data.`);
             }
 
-            // Step 3: Pattern-based detection (NEW enhancement)
             let patternDeviation = null;
             let expectedPowerRange = null;
-
-            // Try to analyze patterns from 30-day history
             let patterns = null;
             try {
               patterns = await PatternAnalysisService.analyzeConsumptionPatterns(activeUserId);
@@ -226,14 +202,11 @@ app.post('/api/esp32/data', async (req, res) => {
               // Silently continue with baseline if pattern detection fails
             }
 
-            // Step 4: Traditional baseline anomaly detection
             const anomaly = await DailyAnalyticsService.detectPowerAnomaly(activeUserId, currentPower);
 
-            // Step 5: Determine if alert should be sent (pattern OR baseline)
             const shouldAlert = (anomaly.isAnomaly || patternDeviation) && currentPower >= 10;
 
             if (shouldAlert) {
-              // Step 6: Get socket signatures learned from relay toggles
               let socketSignatures = null;
               try {
                 socketSignatures = await PatternAnalysisService.getSocketSignatures(activeUserId);
@@ -241,7 +214,6 @@ app.post('/api/esp32/data', async (req, res) => {
                 // Continue without signatures
               }
 
-              // Step 7: Attribute power to specific socket (NEW enhancement)
               const attribution = await PatternAnalysisService.attributePowerToSocket(
                 activeUserId,
                 currentPower,
@@ -249,6 +221,13 @@ app.post('/api/esp32/data', async (req, res) => {
                 parsedRelay2,
                 socketSignatures
               );
+
+              const dominantRelayForAlert = attribution.socket > 0
+                ? attribution.socket
+                : parsedDominantRelay;
+              const dominantPowerForAlert = attribution.power > 0
+                ? parseFloat(attribution.power)
+                : parsedDominantPower;
 
               let problemSocket = attribution.socket > 0 ? `Socket ${attribution.socket}` : 'Unknown Socket';
               let confidence = attribution.confidence;
@@ -270,6 +249,8 @@ app.post('/api/esp32/data', async (req, res) => {
                 isAbnormal: true,
                 anomalySocket: problemSocket,
                 anomalySocketId: attribution.socket,
+                dominantRelay: dominantRelayForAlert,
+                dominantPower: dominantPowerForAlert,
                 confidence,
                 anomalySource,
                 currentPower,
@@ -448,7 +429,6 @@ app.post('/api/esp32/data', async (req, res) => {
   }
 });
 
-// ============ GET LATEST DATA ============
 app.get('/esp32/latest', (req, res) => {
   try {
     res.json({ success: true, data: esp32LatestData });
@@ -457,13 +437,11 @@ app.get('/esp32/latest', (req, res) => {
   }
 });
 
-// ============ USAGE SUMMARY (Fixes Last Month & Current Month) ============
 app.get('/api/usage/summary/:userId', async (req, res) => {
     try {
         const { userId } = req.params;
         const pool = require('./db');
 
-        // Use snapshot-based method for current month, with fallback to MAX-MIN
         let currentMonth = 0;
         try {
             currentMonth = await MonthlySnapshotService.getCurrentMonthUsage(userId);
@@ -479,7 +457,6 @@ app.get('/api/usage/summary/:userId', async (req, res) => {
             currentMonth = parseFloat(result.rows?.[0]?.kwh) || 0;
         }
 
-        // Use snapshot-based method for last month, with fallback to MAX-MIN
         const lastMonthYear = new Date();
         lastMonthYear.setMonth(lastMonthYear.getMonth() - 1);
         const lastMonth = lastMonthYear.getMonth() + 1;
@@ -501,7 +478,6 @@ app.get('/api/usage/summary/:userId', async (req, res) => {
             lastMonthUsage = parseFloat(result.rows?.[0]?.kwh) || 0;
         }
 
-        // Get historical average power
         const avgQuery = `
             SELECT COALESCE(AVG(power), 0) as historical_avg_power
             FROM "EnergyReadings"
@@ -513,7 +489,6 @@ app.get('/api/usage/summary/:userId', async (req, res) => {
         const currentMonthKwh = currentMonth;
         const lastMonthKwh = lastMonthUsage;
 
-        // Dynamic anomaly detection based on user's historical patterns
         let isAbnormal = false;
         let anomalySocket = null;
         let currentPower = 0;
@@ -536,7 +511,6 @@ app.get('/api/usage/summary/:userId', async (req, res) => {
             const relay1 = parseInt(latest.relay1 ?? 0);
             const relay2 = parseInt(latest.relay2 ?? 0);
 
-            // Use dynamic threshold from user's baseline statistics (mean + 2*stddev)
             const anomalyResult = await DailyAnalyticsService.detectPowerAnomaly(userId, currentPower);
             isAbnormal = anomalyResult.isAnomaly;
             anomalyThreshold = anomalyResult.threshold;
@@ -564,7 +538,6 @@ app.get('/api/usage/summary/:userId', async (req, res) => {
             historicalAvg: historicalAvgPower,
             historicalAvgPower,
             daysElapsed: new Date().getDate(),
-            // Anomaly fields expected by Flutter `BillPredictionScreen`
             isAbnormal,
             anomalySocket,
             currentPower,
@@ -576,12 +549,10 @@ app.get('/api/usage/summary/:userId', async (req, res) => {
     }
 });
 
-// ============ DAILY HISTORY (For Bar Chart) ============
 app.get('/api/usage/daily-history/:userId', async (req, res) => {
     try {
         const { userId } = req.params;
         
-        // Use daily_usage table with fallback to EnergyReadings if no data
         const dailyHistory = await DailyAnalyticsService.getCurrentMonthDailyUsage(userId);
         
         res.json(dailyHistory);
@@ -591,13 +562,11 @@ app.get('/api/usage/daily-history/:userId', async (req, res) => {
     }
 });
 
-// ============ FETCH CALCULATED BILL FROM SQL VIEW ============
 app.get('/api/billing/current/:userId', async (req, res) => {
     try {
         const { userId } = req.params;
         const pool = require('./db');
         
-        // Prefer SQL View (if present), but gracefully fallback if it doesn't exist.
         try {
             const result = await pool.query(
                 'SELECT * FROM view_user_bills WHERE user_id = $1',
@@ -611,13 +580,11 @@ app.get('/api/billing/current/:userId', async (req, res) => {
             console.warn('⚠️ view_user_bills unavailable, falling back:', viewErr.message || viewErr);
         }
 
-        // Fallback: compute current-month usage using snapshot-based method
         let kwh = 0;
         try {
             kwh = await MonthlySnapshotService.getCurrentMonthUsage(userId);
         } catch (snapshotErr) {
             console.warn('⚠️ Snapshot method failed, using MAX-MIN fallback:', snapshotErr);
-            // Ultimate fallback: MAX-MIN method
             const usageQuery = `
                 SELECT
                     COALESCE(MAX(energy_consumed) - MIN(energy_consumed), 0) AS total_units_kwh
@@ -629,7 +596,6 @@ app.get('/api/billing/current/:userId', async (req, res) => {
             kwh = parseFloat(usageRes.rows?.[0]?.total_units_kwh) || 0;
         }
 
-        // Simple tariff fallback (aligns with Flutter defaults)
         const baseCharge = 50;
         const ratePerKwh = 10;
         const billRs = baseCharge + (kwh * ratePerKwh);
@@ -651,15 +617,11 @@ app.get('/api/billing/current/:userId', async (req, res) => {
     }
 });
 
-// ============ FETCH HISTORICAL BILLS ============
-// Used by the Flutter `BillHistoryScreen` and `BillHistoryService`
 app.get('/api/billing/history/:userId', async (req, res) => {
     try {
         const { userId } = req.params;
         const pool = require('./db');
 
-        // Compute monthly usage and bill for past months using energy readings.
-        // Amount calculation mirrors the same fallback logic used above.
         const historyQuery = `
             SELECT
                 to_char(month, 'Mon YYYY') AS period,
@@ -686,8 +648,6 @@ app.get('/api/billing/history/:userId', async (req, res) => {
         res.status(500).json({ success: false, error: err.message });
     }
 });
-
-// ============ BILLING SERVICE ENDPOINTS (Enhanced with BillingService) ============
 
 /**
  * GET /api/billing/calculate/:userId
@@ -801,8 +761,6 @@ app.get('/api/billing/summary/:userId', async (req, res) => {
     }
 });
 
-// ============ PUSH NOTIFICATION ENDPOINTS ============
-
 /**
  * POST /api/notifications/register-fcm
  * Register or update user's FCM token for push notifications
@@ -883,7 +841,6 @@ app.post('/api/notifications/test-push', async (req, res) => {
   }
 });
 
-// ============ POWER-LIMIT ENDPOINTS ============
 app.post('/api/power-limit/check', async (req, res) => {
   try {
     const { userId, currentUsage, dailyLimit } = req.body;
@@ -904,7 +861,6 @@ app.get('/api/power-limit/:userId', async (req, res) => {
   }
 });
 
-// ============ GRAPH ENDPOINTS ============
 app.get('/api/graph/live/:userId', async (req, res) => {
   try {
     const { userId } = req.params;
@@ -916,7 +872,6 @@ app.get('/api/graph/live/:userId', async (req, res) => {
   }
 });
 
-// ============ DEBUG: recent energy rows (no psql needed) ============
 app.get('/api/debug/recent-energy', async (req, res) => {
   try {
     const pool = require('./db');
@@ -950,7 +905,6 @@ app.get('/api/debug/recent-energy', async (req, res) => {
   }
 });
 
-// ============ ML PREDICTION ENDPOINTS ============
 app.get('/api/ml-predict/next-hour/:userId', async (req, res) => {
   try {
     const { userId } = req.params;
@@ -961,8 +915,6 @@ app.get('/api/ml-predict/next-hour/:userId', async (req, res) => {
   }
 });
 
-// ============ RELAY CONTROL ENDPOINTS ============
-// Helper function to send command to ESP32
 async function sendRelayCommandToESP32(relayNumber, command) {
   const url = `http://${ESP32_IP}:${ESP32_PORT}/relay${relayNumber}/${command}`;
   console.log(`📡 Sending relay command to ESP32: ${url}`);
@@ -977,15 +929,12 @@ async function sendRelayCommandToESP32(relayNumber, command) {
   }
 }
 
-// Turn off Socket 1 relay
 app.get('/api/relay/relay1/off', async (req, res) => {
   try {
     console.log('🔴 [RELAY 1 OFF] User triggered shutdown');
     
-    // Send actual command to ESP32
     const esp32Result = await sendRelayCommandToESP32(1, 'off');
     
-    // Emit relay status update to all connected clients
     io.emit('relay_status', {
       relay: 1,
       status: 'off',
@@ -994,7 +943,6 @@ app.get('/api/relay/relay1/off', async (req, res) => {
       timestamp: new Date().toISOString()
     });
     
-    // Update cache
     esp32LatestData.relay1 = 0;
     
     if (esp32Result.success) {
@@ -1016,15 +964,12 @@ app.get('/api/relay/relay1/off', async (req, res) => {
   }
 });
 
-// Turn off Socket 2 relay
 app.get('/api/relay/relay2/off', async (req, res) => {
   try {
     console.log('🔴 [RELAY 2 OFF] User triggered shutdown');
     
-    // Send actual command to ESP32
     const esp32Result = await sendRelayCommandToESP32(2, 'off');
     
-    // Emit relay status update to all connected clients
     io.emit('relay_status', {
       relay: 2,
       status: 'off',
@@ -1033,7 +978,6 @@ app.get('/api/relay/relay2/off', async (req, res) => {
       timestamp: new Date().toISOString()
     });
     
-    // Update cache
     esp32LatestData.relay2 = 0;
     
     if (esp32Result.success) {
@@ -1055,14 +999,12 @@ app.get('/api/relay/relay2/off', async (req, res) => {
   }
 });
 
-// Turn on Socket 1 relay
 app.get('/api/relay/relay1/on', async (req, res) => {
   try {
     console.log('🟢 [RELAY 1 ON] User enabled socket');
     
-    // Send actual command to ESP32
     const esp32Result = await sendRelayCommandToESP32(1, 'on');
-    
+
     io.emit('relay_status', {
       relay: 1,
       status: 'on',
@@ -1071,7 +1013,6 @@ app.get('/api/relay/relay1/on', async (req, res) => {
       timestamp: new Date().toISOString()
     });
     
-    // Update cache
     esp32LatestData.relay1 = 1;
     
     if (esp32Result.success) {
@@ -1093,14 +1034,12 @@ app.get('/api/relay/relay1/on', async (req, res) => {
   }
 });
 
-// Turn on Socket 2 relay
 app.get('/api/relay/relay2/on', async (req, res) => {
   try {
     console.log('🟢 [RELAY 2 ON] User enabled socket');
     
-    // Send actual command to ESP32
     const esp32Result = await sendRelayCommandToESP32(2, 'on');
-    
+
     io.emit('relay_status', {
       relay: 2,
       status: 'on',
@@ -1109,7 +1048,6 @@ app.get('/api/relay/relay2/on', async (req, res) => {
       timestamp: new Date().toISOString()
     });
     
-    // Update cache
     esp32LatestData.relay2 = 1;
     
     if (esp32Result.success) {
@@ -1131,7 +1069,6 @@ app.get('/api/relay/relay2/on', async (req, res) => {
   }
 });
 
-// Get current relay status
 app.get('/api/relay/status', (req, res) => {
   try {
     res.json({
@@ -1145,14 +1082,12 @@ app.get('/api/relay/status', (req, res) => {
   }
 });
 
-// ============ DAILY USAGE MANAGEMENT ENDPOINTS ============
-// Backfill daily_usage table from historical EnergyReadings
 app.post('/api/usage/backfill/:userId', async (req, res) => {
   try {
     const { userId } = req.params;
     const { daysBack } = req.body;
     
-    const days = parseInt(daysBack) || 90; // Default 90 days
+    const days = parseInt(daysBack) || 90;
     
     console.log(`🔄 Starting backfill for user ${userId}, ${days} days...`);
     const result = await DailyAnalyticsService.backfillDailyUsage(userId, days);
@@ -1172,7 +1107,6 @@ app.post('/api/usage/backfill/:userId', async (req, res) => {
   }
 });
 
-// Get user baseline statistics
 app.get('/api/usage/baseline/:userId', async (req, res) => {
   try {
     const { userId } = req.params;
@@ -1191,7 +1125,6 @@ app.get('/api/usage/baseline/:userId', async (req, res) => {
   }
 });
 
-// Manually trigger daily aggregation for today
 app.post('/api/usage/aggregate-today/:userId', async (req, res) => {
   try {
     const { userId } = req.params;
@@ -1211,11 +1144,9 @@ app.post('/api/usage/aggregate-today/:userId', async (req, res) => {
   }
 });
 
-// ============ SOCKET.IO LOGIC ============
 io.on('connection', (socket) => {
   console.log(`✅ Dashboard Connected: ${socket.id}`);
 
-  // Send the most recent data immediately upon connection
   socket.emit('live_data_update', esp32LatestData);
 
   socket.on('disconnect', () => {
@@ -1223,9 +1154,6 @@ io.on('connection', (socket) => {
   });
 });
 
-// ============ DEBUG: FORCE ANOMALY ALERT (for Flutter testing) ============
-// Hit this in a browser: http://localhost:4000/api/debug/trigger-anomaly
-// You should see an alert in the app if Socket.io + handlers are wired.
 app.get('/api/debug/trigger-anomaly', (req, res) => {
   try {
     const payload = {
@@ -1248,7 +1176,6 @@ app.get('/api/debug/trigger-anomaly', (req, res) => {
   }
 });
 
-// ============ ALERT DISMISSAL ENDPOINT (Smart Dismissal) ============
 app.post('/api/alerts/dismiss/:alertId', async (req, res) => {
   try {
     const { alertId } = req.params;
@@ -1258,13 +1185,11 @@ app.post('/api/alerts/dismiss/:alertId', async (req, res) => {
       return res.status(400).json({ success: false, error: 'Missing alertId or userId' });
     }
 
-    // Record dismissal with 2-minute re-alert scheduling
     const now = new Date();
     const reAlertTime = new Date(now.getTime() + 2 * 60 * 1000); // 2 minutes from now
 
     const pool = require('./db');
     
-    // Store in database
     await pool.query(
       `INSERT INTO alert_dismissals (user_id, alert_id, alert_data, dismissed_at, re_alert_scheduled_for)
        VALUES ($1, $2, $3, $4, $5)
@@ -1272,7 +1197,6 @@ app.post('/api/alerts/dismiss/:alertId', async (req, res) => {
       [userId, alertId, JSON.stringify(alertData || {}), now, reAlertTime]
     );
 
-    // Store in in-memory cache for fast lookups
     dismissedAlerts[alertId] = {
       userId,
       dismissedAt: now,
@@ -1280,7 +1204,6 @@ app.post('/api/alerts/dismiss/:alertId', async (req, res) => {
       reAlertScheduledFor: reAlertTime
     };
 
-    // Emit dismissal event to all clients
     io.emit('alert_dismissed', { alertId, userId, reAlertIn: '2 minutes' });
 
     console.log(`📝 Alert ${alertId} dismissed by user ${userId}. Will re-alert in 2 minutes if power still high.`);
@@ -1297,8 +1220,6 @@ app.post('/api/alerts/dismiss/:alertId', async (req, res) => {
   }
 });
 
-// ============ PATTERN ANALYSIS ENDPOINTS ============
-// Get learned socket power signatures
 app.get('/api/relay/signatures/:userId', async (req, res) => {
   try {
     const { userId } = req.params;
@@ -1314,7 +1235,6 @@ app.get('/api/relay/signatures/:userId', async (req, res) => {
   }
 });
 
-// Manually trigger pattern analysis
 app.post('/api/pattern/analyze/:userId', async (req, res) => {
   try {
     const { userId } = req.params;
@@ -1330,10 +1250,9 @@ app.post('/api/pattern/analyze/:userId', async (req, res) => {
   }
 });
 
-// ============ MONTHLY BILLING RESET (CRON JOB) ============
+// Monthly billing reset - runs on 1st of each month at midnight
 cron.schedule('0 0 1 * *', async () => {
         
-        // Create monthly snapshots for all users
         console.log('📸 Creating monthly energy snapshots for all users...');
         const snapshotResults = await MonthlySnapshotService.createMonthlySnapshots();
         console.log(`✅ Created ${snapshotResults.created} snapshots, reused ${snapshotResults.existing} existing.`);
@@ -1347,12 +1266,11 @@ cron.schedule('0 0 1 * *', async () => {
     }
 });
 
-// ============ DAILY USAGE AGGREGATION (CRON JOB - Runs at midnight) ============
+// Daily usage aggregation - runs at midnight
 cron.schedule('0 0 * * *', async () => {
     try {
         console.log('📊 Running Daily Usage Aggregation...');
         
-        // Get all users with data
         const pool = require('./db');
         const usersResult = await pool.query(`
             SELECT DISTINCT user_id 
@@ -1360,12 +1278,10 @@ cron.schedule('0 0 * * *', async () => {
             WHERE timestamp >= CURRENT_DATE - INTERVAL '1 day'
         `);
         
-        // Aggregate for each user
         for (const row of usersResult.rows) {
             const yesterday = moment().subtract(1, 'day').format('YYYY-MM-DD');
             await DailyAnalyticsService.aggregateDailyUsage(row.user_id, yesterday);
 
-            // Finalize carry-forward and award reward for closed day if rollover happened.
             const resetResult = await GoalTrackingService.checkAndResetDaily(row.user_id);
             if (resetResult && resetResult.resetNeeded && resetResult.previousDate) {
               await RewardSystemService.calculateDailyPoints(row.user_id, resetResult.previousDate);
@@ -1378,13 +1294,12 @@ cron.schedule('0 0 * * *', async () => {
     }
 });
 
-// ============ RE-ALERT CHECK (CRON JOB - Every minute) ============
+// Re-alert check - runs every minute
 cron.schedule('*/1 * * * *', async () => {
   try {
     const pool = require('./db');
     const now = new Date();
 
-    // Get all dismissed alerts that are ready for re-alerting
     const result = await pool.query(
       `SELECT * FROM alert_dismissals 
        WHERE re_alert_scheduled_for <= $1 AND re_alerted = FALSE`,
@@ -1397,7 +1312,6 @@ cron.schedule('*/1 * * * *', async () => {
         const alertId = dismissal.alert_id;
         const originalData = dismissal.alert_data;
 
-        // Check current power from latest ESP32 data
         const latestReading = await pool.query(
           `SELECT power FROM "EnergyReadings" 
            WHERE user_id = $1 
@@ -1409,7 +1323,6 @@ cron.schedule('*/1 * * * *', async () => {
           const currentPower = latestReading.rows[0].power;
           const baseline = await DailyAnalyticsService.getUserBaseline(userId);
 
-          // Re-alert threshold: if power is still above threshold
           if (currentPower > (baseline.threshold || 150)) {
             console.log(`🔔 [RE-ALERT] User ${userId}: Power ${currentPower.toFixed(0)}W still above threshold ${(baseline.threshold || 150).toFixed(0)}W. Re-alerting...`);
 
@@ -1422,27 +1335,21 @@ cron.schedule('*/1 * * * *', async () => {
               threshold: baseline.threshold || 150
             };
 
-            // Emit re-alert
             io.emit('anomaly_alert', reAlertData);
 
-            // Send push notification
             PushNotificationService.sendAnomalyAlert(userId, {
               ...reAlertData,
               message: `⚠️ RE-ALERT: ${originalData.anomalySocket} power is STILL ${currentPower.toFixed(0)}W! Please check.`
             }).catch(err => console.error('❌ Re-alert push failed:', err));
 
-            // Mark as re-alerted in database
             await pool.query(
               `UPDATE alert_dismissals SET re_alerted = TRUE, re_alert_sent_at = $1 WHERE alert_id = $2`,
               [now, alertId]
             );
 
-            // Remove from in-memory cache
             delete dismissedAlerts[alertId];
           } else {
             console.log(`✅ [NO RE-ALERT] User ${userId}: Power dropped to ${currentPower.toFixed(0)}W. Dismissal stands.`);
-
-            // Clear the dismissal if power is back to normal
             await pool.query(
               `UPDATE alert_dismissals SET re_alerted = TRUE WHERE alert_id = $1`,
               [alertId]
@@ -1459,7 +1366,6 @@ cron.schedule('*/1 * * * *', async () => {
   }
 });
 
-// Ensure supporting tables exist (safe to run every start)
 try {
   const pool = require('./db');
   (async () => {
@@ -1473,7 +1379,6 @@ try {
         );
       `);
 
-      // Backward-compatible migration for existing databases.
       await pool.query(`
         ALTER TABLE users
         ADD COLUMN IF NOT EXISTS mobile_number VARCHAR(15)
@@ -1488,7 +1393,6 @@ try {
   console.error('❌ Could not initialize DB helper for migrations:', e);
 }
 
-// ============ START SERVER ============
 const PORT = process.env.PORT || 4000;
 server.listen(PORT, '0.0.0.0', () => {
   console.log('\n🚀 ================================');
