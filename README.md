@@ -180,11 +180,14 @@ Replace `<your_password>` with your PostgreSQL password.
 
 ### 3. Set the ESP32 IP address
 
-Open `wattbuddy-server/server.js` and update the constant near the top:
+Open `wattbuddy-server/.env` and set the IP address shown in the ESP32 Serial Monitor:
 
-```js
-const ESP32_IP = '192.168.X.X';   // Set to your ESP32's IP on your network
+```env
+ESP32_IP=192.168.X.X
+ESP32_PORT=80
 ```
+
+This is the **only place** you need to change the IP. The server reads it on startup and exposes it via `/api/config`. The Flutter app fetches the IP automatically at launch — no Dart code changes required.
 
 ### 4. (Optional) Enable Firebase Push Notifications
 
@@ -246,17 +249,7 @@ For a real Android device, pass your PC's LAN IP at run time:
 flutter run -d android --dart-define=API_BASE_URL=http://192.168.X.X:4000/api
 ```
 
-### 3. Update the ESP32 IP in Dart
-
-Open `lib/config/network_config.dart` and set:
-
-```dart
-static const String ESP32_IP = '192.168.X.X';
-```
-
-Also update the `espIp` constant inside `getESP32Sensors()` in `lib/services/api_service.dart` to the same IP.
-
-### 4. Run the app
+### 3. Run the app
 
 ```bash
 flutter run -d windows    # Desktop (Windows)
@@ -301,7 +294,7 @@ const char* serverUrl = "http://192.168.X.X:4000/api/esp32/data";
 5. Click **Upload**
 6. Open **Serial Monitor** at 115200 baud — the ESP32 prints its assigned IP address on boot
 
-Use that IP in `server.js` (`ESP32_IP`) and `lib/config/network_config.dart` (`ESP32_IP`).
+Use that IP in `wattbuddy-server/.env` (`ESP32_IP`). The Flutter app fetches the IP from the server at startup automatically.
 
 ### Data format POSTed by ESP32
 
@@ -353,6 +346,12 @@ The ESP32 connects to WiFi and POSTs sensor data to the server automatically.
 ---
 
 ## API Reference
+
+### Configuration
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/api/config` | Returns current `esp32Ip` and `esp32Port` (Flutter fetches this at startup) |
 
 ### ESP32 Ingestion
 
@@ -461,6 +460,8 @@ All variables go in `wattbuddy-server/.env`:
 | `PORT` | `4000` | Port the Express server listens on |
 | `DATABASE_URL` | `postgres://postgres:pass@localhost:5432/wattbuddy` | Full PostgreSQL connection string |
 | `JWT_SECRET` | `mysecretkey` | Secret for signing JWT tokens |
+| `ESP32_IP` | `192.168.137.101` | ESP32 device IP (update whenever the network changes) |
+| `ESP32_PORT` | `80` | ESP32 web server port (default `80`) |
 
 ---
 
@@ -478,7 +479,8 @@ psql "postgres://postgres:<password>@localhost:5432/wattbuddy"
 - Ensure the phone and server are on the same network
 
 **Relay commands time out**  
-- Confirm `ESP32_IP` in `server.js` matches the ESP32's actual IP (shown in Serial Monitor)  
+- Update `ESP32_IP` in `wattbuddy-server/.env` to match the IP shown in the ESP32 Serial Monitor, then restart the server (`node server.js`)
+- Restart the Flutter app so it fetches the new IP from `/api/config`
 - Both the server PC and ESP32 must be on the same network
 
 **Flutter Windows build fails — LNK1168 error**  
